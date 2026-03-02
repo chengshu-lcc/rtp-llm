@@ -498,10 +498,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("disable_dpc_random", &HWKernelConfig::disable_dpc_random)
         .def_readwrite("rocm_disable_custom_ag", &HWKernelConfig::rocm_disable_custom_ag)
         .def_readwrite("deterministic_gemm", &HWKernelConfig::deterministic_gemm)
-<<<<<<< HEAD
         .def_readwrite("deterministic_attn", &HWKernelConfig::deterministic_attn)
-=======
->>>>>>> 9b9ac97eb (feat: deterministic_gemm for test)
         .def("to_string", &HWKernelConfig::to_string)
         .def(py::pickle(
             [](const HWKernelConfig& self) {
@@ -544,10 +541,6 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                     c.disable_dpc_random           = t[13].cast<bool>();
                     c.rocm_disable_custom_ag       = t[14].cast<bool>();
                     c.deterministic_gemm           = t[15].cast<bool>();
-<<<<<<< HEAD
-                    c.deterministic_attn           = t[16].cast<bool>();
-=======
->>>>>>> 9b9ac97eb (feat: deterministic_gemm for test)
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("HWKernelConfig unpickle error: ") + e.what());
                 }
