@@ -20,7 +20,7 @@ from rtp_llm.models.rotary_embedding.deepseek_rotary_embedding import (
 from rtp_llm.models_py.modules.factory.attention.cuda_mla_impl.flashinfer_mla_wrapper import (
     MlaFlashInferPrefillImpl,
 )
-from rtp_llm.ops.compute_ops import KVCache, PyAttentionInputs
+from rtp_llm.ops.compute_ops import KVCache, LayerKVCache, PyAttentionInputs
 from rtp_llm.utils.model_weight import W
 
 
@@ -218,7 +218,7 @@ class MLABenchmark(TestCase):
             device=device,
         )
 
-        kv_cache: Optional[KVCache] = KVCache()
+        kv_cache: Optional[LayerKVCache] = LayerKVCache()
         kv_cache.kv_cache_base = cache
 
         # 创建cos_sin_cache
