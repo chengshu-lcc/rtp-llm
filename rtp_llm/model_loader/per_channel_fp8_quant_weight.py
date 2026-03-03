@@ -32,11 +32,11 @@ from rtp_llm.utils.model_weight import (
     sp_head_gemm_a8,
     sp_head_s_gemm_a8_channel,
     sp_id,
+    sp_moe_neg1,
+    sp_moe_w1,
     sp_neg1,
     stack_,
     stack_moe_w1,
-    sp_moe_w1,
-    sp_moe_neg1
 )
 from rtp_llm.utils.util import check_with_info
 
@@ -45,9 +45,27 @@ B_SUFFIX = ".bias"
 QW_SUFFIX = ".weight"
 QS_SUFFIX = ".weight_scale"
 
+
+def _identity_ensure_2d(
+    ts: List[torch.Tensor], allow_empty: bool = False
+) -> torch.Tensor:
+    """Load per-channel scale from checkpoint, ensuring 2D [N, 1] output.
+
+    Quark stores per-channel scale as 1D [N], while compressed-tensors stores
+    it as 2D [N, 1]. This function normalizes both to 2D [N, 1] at the earliest
+    loading stage (as CkptWeightInfo merge_fun), so all downstream functions
+    (pad, pad_w13, stack, sp_0, _postprocess, etc.) work uniformly.
+    """
+    result = identity(ts, allow_empty)
+    if result is not None and result.dim() == 1:
+        return result.unsqueeze(-1)
+    return result
+
+
 def cast_to_fp8(x: torch.Tensor):
     """Convert tensor to FP8 format."""
     return x.to(torch.float8_e4m3fn)
+
 
 def per_channel_cast_to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -57,7 +75,10 @@ def per_channel_cast_to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
     Returns:
         tuple[torch.Tensor, torch.Tensor]: Quantized tensor and channel-wise scales
     """
-    assert x.dim() in [2, 3], f"weight dim=2 or dim=3 supported, but got shape {x.shape}"
+    assert x.dim() in [
+        2,
+        3,
+    ], f"weight dim=2 or dim=3 supported, but got shape {x.shape}"
     if x.dim() == 3:
         channel_max = x.abs().amax(dim=-1, keepdim=True).clamp(1e-4)
         scales = (channel_max / FP8_E4M3_MAX).to(torch.float32)
@@ -71,6 +92,7 @@ def per_channel_cast_to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
     # Quantize the tensor
     quantized = (x / scales).to(torch.float8_e4m3fn)
     return (quantized.T).contiguous(), (scales.T).contiguous()
+
 
 def gemm_channel_fp8_gpt_style_tp_strategy():
     gemm_channel_fp8_weight_tp_strategy: Dict[str, Any] = {
@@ -89,7 +111,7 @@ def gemm_channel_fp8_gpt_style_tp_strategy():
         W.moe_w1: sp_moe_w1,
         W.moe_s1: sp_moe_w1,
         W.moe_w2: sp_moe_neg1,
-        W.moe_s2: sp_id
+        W.moe_s2: sp_id,
     }
     tp_strategy = copy.deepcopy(W.gpt_style_tp_strategy)
     tp_strategy.update(gemm_channel_fp8_weight_tp_strategy)
@@ -154,7 +176,8 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
         cls, quant_config: QuantizationConfig, src_weight_info: WeightModule
     ) -> bool:
         if not quant_config.is_quanted() or not isinstance(
-            quant_config, (Fp8PerChannelCompressedQuantConfig, Fp8PerChannelQuarkQuantConfig)
+            quant_config,
+            (Fp8PerChannelCompressedQuantConfig, Fp8PerChannelQuarkQuantConfig),
         ):
             return False
         name = src_weight_info.name
@@ -197,7 +220,9 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
             for sub_w in weights
         ]
         qkv_s_list = [
-            CkptWeightInfo(sub_w.name[: -len(W_SUFFIX)] + QS_SUFFIX, sub_w.merge_fun)
+            CkptWeightInfo(
+                sub_w.name[: -len(W_SUFFIX)] + QS_SUFFIX, _identity_ensure_2d
+            )
             for sub_w in weights
         ]
         kernel = create_w8a8_fp8_per_channel_weight(
@@ -244,7 +269,7 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
         scale = create_w8a8_fp8_per_channel_weight(
             src_weight_info,
             W.attn_o_s,
-            [CkptWeightInfo(w_name + QS_SUFFIX)],
+            [CkptWeightInfo(w_name + QS_SUFFIX, _identity_ensure_2d)],
             data_type=torch.float32,
             config=src_weight_info.config,
         )
@@ -279,8 +304,8 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
                     src_weight_info,
                     s,
                     [
-                        CkptWeightInfo(w1_name + QS_SUFFIX, identity),
-                        CkptWeightInfo(w3_name + QS_SUFFIX, identity),
+                        CkptWeightInfo(w1_name + QS_SUFFIX, _identity_ensure_2d),
+                        CkptWeightInfo(w3_name + QS_SUFFIX, _identity_ensure_2d),
                     ],
                     functools.partial(
                         pad_w13,
@@ -312,7 +337,7 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
             scale = create_w8a8_fp8_per_channel_weight(
                 src_weight_info,
                 s,
-                [CkptWeightInfo(w_name + QS_SUFFIX, identity)],
+                [CkptWeightInfo(w_name + QS_SUFFIX, _identity_ensure_2d)],
                 functools.partial(
                     pad,
                     align_size=src_weight_info.config.align_size,
@@ -338,7 +363,7 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
             scale = create_w8a8_fp8_per_channel_weight(
                 src_weight_info,
                 W.ffn_s2,
-                [CkptWeightInfo(w_name + QS_SUFFIX, identity)],
+                [CkptWeightInfo(w_name + QS_SUFFIX, _identity_ensure_2d)],
                 data_type=torch.float32,
                 config=src_weight_info.config,
             )
@@ -358,7 +383,7 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
         scale = create_w8a8_fp8_per_channel_weight(
             src_weight_info,
             W.moe_s2,
-            [CkptWeightInfo(w_name + QS_SUFFIX, identity)],
+            [CkptWeightInfo(w_name + QS_SUFFIX, _identity_ensure_2d)],
             stack_,
             data_type=torch.float32,
             config=src_weight_info.config,
@@ -382,7 +407,9 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
             src_weight_info,
             W.moe_s1,
             [
-                CkptWeightInfo(w.name[: -len(W_SUFFIX)] + QS_SUFFIX, identity)
+                CkptWeightInfo(
+                    w.name[: -len(W_SUFFIX)] + QS_SUFFIX, _identity_ensure_2d
+                )
                 for w in src_weight_info.weights
             ],
             stack_moe_w1,
@@ -422,6 +449,7 @@ class PerChannelFp8Weight(CompositeWeight, QuantWeight):
             processed_res[self.kernel.name] = kernel_weight
 
         return processed_res
+
 
 class LoadQuantPerChannelFp8Weight(PerChannelFp8Weight):
     """
