@@ -291,10 +291,6 @@ def sp_moe_neg1(
     use_stack_weight: bool,
     **kwargs: Any,
 ) -> torch.Tensor:
-    # TODO(sumu): refactor
-    if t.shape[-1] == 1:
-        return t
-
     if use_stack_weight:
         assert len(t.shape) == 3, "t.shape: " + str(t.shape)
         return t.split(t.shape[0] // ep, dim=0)[ep_rank]
@@ -1378,15 +1374,14 @@ class W:
         ffn_b2: sp_id,
         ffn_act_s: ffn_sp_0,
         ffn_smoother: ffn_sp_0,
-        # TODO(sumu): support TP split for bias/zero
         moe_w1: sp_moe_w1,
-        #moe_z1: sp_moe_w1,
+        moe_z1: sp_moe_w1,
         moe_s1: sp_moe_w1,
         moe_w1_s2: sp_id,
         moe_w1_i_s: sp_id,
         moe_b1: sp_moe_neg1,
         moe_w2: sp_moe_neg1,
-        #moe_z2: sp_moe_neg1,
+        moe_z2: sp_moe_neg1,
         moe_s2: sp_moe_neg1,
         moe_b2: sp_moe_neg1,
         moe_w2_s2: sp_id,
