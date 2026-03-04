@@ -57,10 +57,11 @@ def auto_configure_deepep(
     ep_size = parallelism_config.ep_size
     world_size = parallelism_config.world_size
     moe_config.ll_num_max_token = ll_num_max_token
+    # TODO(wenhua): pure tp mode ep_size == 1
     moe_config.use_all_gather = (
         moe_config.use_all_gather
         and not deep_ep_config.use_deepep_low_latency
-        and ep_size == tp_size
+        and (ep_size == tp_size or ep_size == 1)
     )
     if moe_config.use_all_gather:
         moe_config.use_deepep_moe = False
@@ -206,8 +207,19 @@ def set_parallelism_config(
             n = world_size
         parallelism_config.local_world_size = max(n, 1)
 
+    # The default value of ep_size is 0, meaning EP is not explicitly configured.
+    # When ep_size == 0, fall back to the original behavior: ep_size = tp_size * dp_size.
+    # When ep_size == 1, it indicates pure TP mode, which requires tp_size > 1, dp_size == 1.
+    if parallelism_config.ep_size == 1:
+        assert parallelism_config.tp_size >= 1, (
+            f"Pure TP mode (ep_size=1) requires tp_size > 1, got tp_size={parallelism_config.tp_size}"
+        )
+        assert parallelism_config.dp_size == 1, (
+            f"Pure TP mode (ep_size=1) requires dp_size == 1, got dp_size={parallelism_config.dp_size}"
+        )
+
     expected_ep = parallelism_config.tp_size * parallelism_config.dp_size
-    need_ep = expected_ep > 1 and parallelism_config.ep_size == 1
+    need_ep = expected_ep > 1 and parallelism_config.ep_size == 0
     if need_ep:
         parallelism_config.ep_size = expected_ep
     ffn_tp_size = parallelism_config.tp_size // parallelism_config.ffn_sp_size
