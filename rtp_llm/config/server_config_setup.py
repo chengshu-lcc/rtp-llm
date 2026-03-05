@@ -212,16 +212,20 @@ def set_parallelism_config(
     # When ep_size == 1, it indicates pure TP mode, which requires tp_size > 1, dp_size == 1.
     if parallelism_config.ep_size == 1:
         assert parallelism_config.tp_size >= 1, (
-            f"Pure TP mode (ep_size=1) requires tp_size > 1, got tp_size={parallelism_config.tp_size}"
+            f"Pure TP mode (ep_size=1) requires tp_size >= 1, got tp_size={parallelism_config.tp_size}"
         )
         assert parallelism_config.dp_size == 1, (
             f"Pure TP mode (ep_size=1) requires dp_size == 1, got dp_size={parallelism_config.dp_size}"
         )
+    elif parallelism_config.ep_size == 0:
+        logging.info("parallelism_config.ep_size == 0, auto set to world size")
+        parallelism_config.ep_size = parallelism_config.world_size
+        parallelism_config.ep_size = parallelism_config.tp_size * parallelism_config.dp_size
+    else:
+        assert parallelism_config.ep_size == parallelism_config.tp_size * parallelism_config.dp_size, (
+            f"ep_size must be equal to 1 or tp_size * dp_size, got ep_size={parallelism_config.ep_size}, tp_size={parallelism_config.tp_size}, dp_size={parallelism_config.dp_size}"
+        )
 
-    expected_ep = parallelism_config.tp_size * parallelism_config.dp_size
-    need_ep = expected_ep > 1 and parallelism_config.ep_size == 0
-    if need_ep:
-        parallelism_config.ep_size = expected_ep
     ffn_tp_size = parallelism_config.tp_size // parallelism_config.ffn_sp_size
     parallelism_config.ffn_tp_size = ffn_tp_size
     parallelism_config.enable_sp = parallelism_config.ffn_sp_size > 1

@@ -287,8 +287,11 @@ def sp_moe_neg1(
     dp: int,
     dp_rank: int,
     use_stack_weight: bool,
+    moe_pure_tp_mode: bool = False,
     **kwargs: Any,
 ) -> torch.Tensor:
+    if moe_pure_tp_mode:
+        return t.split(t.shape[-1] // tp, dim=-1)[tp_rank]
     if use_stack_weight:
         assert len(t.shape) == 3, "t.shape: " + str(t.shape)
         return t.split(t.shape[0] // ep, dim=0)[ep_rank]
@@ -305,9 +308,16 @@ def sp_moe_w1(
     dp: int,
     dp_rank: int,
     use_stack_weight: bool,
+    moe_pure_tp_mode: bool = False,
     **kwargs: Any,
 ) -> torch.Tensor:
-    # [expert_num, 2*n, k]
+    # [expert_num, 2*n, k] where dim=1 is gate+up concatenated
+    if moe_pure_tp_mode:
+        t1 = t.reshape([t.shape[0], 2, -1, t.shape[-1]])
+        t2 = torch.split(t1, t1.shape[2] // tp, dim=2)[tp_rank]
+        t2 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
+        t3 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
+        return t3
     if use_stack_weight:
         assert len(t.shape) == 3, "t.shape: " + str(t.shape)
         return t.split(t.shape[0] // ep, dim=0)[ep_rank]

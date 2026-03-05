@@ -1,4 +1,4 @@
-"""CUDA FP8 PerTensor quantization strategies"""
+"""Rocm FP8 PerTensor quantization strategies"""
 
 from typing import Any
 

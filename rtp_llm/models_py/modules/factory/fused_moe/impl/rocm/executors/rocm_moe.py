@@ -4,15 +4,6 @@ import aiter
 
 import torch
 
-import rtp_llm.ops.compute_ops as compute_ops
-from rtp_llm.models_py.kernels.cuda.fp8_kernel import (
-    cutlass_moe_mm_fp8_scaled,
-    get_best_config_swap_ab,
-)
-from rtp_llm.models_py.modules.factory import (
-    LinearFactory,
-)
-
 from rtp_llm.models_py.modules.factory.fused_moe.defs.config_adapter import (
     MoEConfigAdapter,
 )
@@ -25,10 +16,6 @@ from rtp_llm.models_py.modules.factory.fused_moe.defs.quant_config import (
     FusedMoEQuantConfig,
 )
 from rtp_llm.models_py.modules.factory.fused_moe.defs.type import ExecutorType
-from rtp_llm.models_py.triton_kernels.common.activation import (
-    silu_and_mul,
-    silu_mul_fp8_per_token_quant_batched,
-)
 
 from rtp_llm.utils.model_weight import W
 
@@ -49,7 +36,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
         checker.check(
-            quant_method is "FP8_PER_CHANNEL_COMPRESSED"
+            quant_method == "FP8_PER_CHANNEL_COMPRESSED"
         )
 
     @property
@@ -104,10 +91,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
         assert self.w2.stride(-1) == 1, "Stride of last dimension must be 1"
         assert payload.expert_tokens_meta is not None
 
-        E = self.local_num_experts
         global_E = self.num_experts
-
-        # temp fix to reshape experts
         E = global_E
         N = self.w1.size(1)
         assert payload.expert_topk_ids is not None

@@ -121,7 +121,7 @@ def _worker_allreduce_residual_rmsnorm(
 ):
     try:
         _setup_distributed(rank, world_size, port)
-        from rtp_llm.models_py.distributed.trt_allreduce import TrtllmDistEnv
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import TrtllmDistEnv
 
         device = torch.device(f"cuda:{rank}")
         dist_env = TrtllmDistEnv(
@@ -227,7 +227,7 @@ def _worker_pure_allreduce(
 ):
     try:
         _setup_distributed(rank, world_size, port)
-        from rtp_llm.models_py.distributed.trt_allreduce import TrtllmDistEnv
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import TrtllmDistEnv
 
         device = torch.device(f"cuda:{rank}")
         dist_env = TrtllmDistEnv(
@@ -292,7 +292,7 @@ def _worker_fused_vs_native(
     """Compare TrtllmDistEnv.allreduce_add_rms_fused with allreduce_add_rms_native."""
     try:
         _setup_distributed(rank, world_size, port)
-        from rtp_llm.models_py.distributed.trt_allreduce import TrtllmDistEnv
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import TrtllmDistEnv
 
         device = torch.device(f"cuda:{rank}")
         dist_env = TrtllmDistEnv(
