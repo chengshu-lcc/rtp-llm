@@ -7,14 +7,7 @@ import torch
 
 from rtp_llm.models_py.distributed.collective_torch import (
     Group,
-    _get_group,
     all_reduce,
-    is_cuda_graph,
-)
-from rtp_llm.models_py.kernels.cuda.deepgemm_wrapper import is_deep_gemm_e8m0_used
-from rtp_llm.models_py.kernels.cuda.fp8_kernel import (
-    scaled_fp8_per_token_quant,
-    sgl_per_token_group_quant_fp8,
 )
 from rtp_llm.models_py.modules.factory.fused_moe.defs.config_adapter import (
     MoEConfigAdapter,
@@ -126,21 +119,9 @@ class PureTpRouterBase(FusedMoeDataRouter):
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
-            try:
-                from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
-                fused_expert_output = trtllm_allreduce(
-                    allreduce_in=fused_expert_output,
-                    group=_get_group(Group.TP),
-                    device_id=self.tp_rank,
-                )
-            except Exception as e:
-                logging.warning(
-                    "trtllm_allreduce failed in graph mode, fallback to RCCL all_reduce: %s",
-                    e,
-                )
-                fused_expert_output = all_reduce(
-                    fused_expert_output, group=Group.TP
-                )
+            fused_expert_output = all_reduce(
+                fused_expert_output, group=Group.TP
+            )
         return fused_expert_output
 
 
@@ -183,22 +164,7 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
-            if is_cuda_graph():
-                try:
-                    from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
-                    fused_expert_output = trtllm_allreduce(
-                        allreduce_in=fused_expert_output,
-                        group=_get_group(Group.TP),
-                        device_id=self.tp_rank,
-                    )
-                except Exception as e:
-                    logging.warning(
-                        "trtllm_allreducefailed in graph mode, fallback to RCCL all_reduce: %s",
-                        e,
-                    )
-                    fused_expert_output = all_reduce(
-                        fused_expert_output, group=Group.TP
-                    )
-            else:
-                fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
+            fused_expert_output = all_reduce(
+                fused_expert_output, group=Group.TP
+            )
         return fused_expert_output
