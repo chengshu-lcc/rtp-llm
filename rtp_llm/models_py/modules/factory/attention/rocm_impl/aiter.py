@@ -253,22 +253,23 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
             K_QScale = kv_cache.kv_scale_base.select(1, 0)
             V_QScale = kv_cache.kv_scale_base.select(1, 1)
         out_ = torch.empty_like(query)
-        output = aiter.pa_fwd_asm(
-            query,  # [num_seqs, num_heads, head_size]
-            key_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
-            value_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
-            block_tables_id_device,
-            seq_lens,
-            max_num_blocks,
-            1,
-            K_QScale,
-            V_QScale,
-            out_,
-            None,
-            0,
-        )
-        output_reshaped = output.view(output.shape[0], -1)
-        return output_reshaped
+        # output = aiter.pa_fwd_asm(
+        #     query,  # [num_seqs, num_heads, head_size]
+        #     key_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
+        #     value_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
+        #     block_tables_id_device,
+        #     seq_lens,
+        #     max_num_blocks,
+        #     1,
+        #     K_QScale,
+        #     V_QScale,
+        #     out_,
+        #     None,
+        #     0,
+        # )
+        # output_reshaped = output.view(output.shape[0], -1)
+        # return output_reshaped
+        return query
 
 
 class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
