@@ -86,7 +86,7 @@ py_test(
     ],
     timeout = 'moderate',
     env = {"GPU_COUNT": "2"},
-    tags = ["open_skip", "MI308X"],
+    tags = ["MI308X"],
     exec_properties = {'gpu':'MI308X', 'gpu_count':'2'},
 )
 
