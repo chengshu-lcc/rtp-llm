@@ -15,10 +15,11 @@ class AttentionLayerTestFp16: public AttentionLayerTest<half> {
 
 TEST_F(AttentionLayerTestFp16, testSimpleContextAttention) {
     AttentionConfigs attention_conf;
-    attention_conf.head_num         = 4;
-    attention_conf.kv_head_num      = 4;
-    attention_conf.size_per_head    = 32;
-    attention_conf.tokens_per_block = 4;
+    attention_conf.head_num                = 4;
+    attention_conf.kv_head_num             = 4;
+    attention_conf.size_per_head           = 32;
+    attention_conf.tokens_per_block        = 4;
+    attention_conf.kernel_tokens_per_block = 4;
 
     attention_conf.rope_config.style = RopeStyle::Base;
     attention_conf.rope_config.dim   = attention_conf.size_per_head;
@@ -37,14 +38,15 @@ TEST_F(AttentionLayerTestFp16, testSimpleContextAttention) {
 
 TEST_F(AttentionLayerTestFp16, testSimpleContextAttention2) {
     AttentionConfigs attention_conf;
-    attention_conf.head_num          = 16;
-    attention_conf.kv_head_num       = 16;
-    attention_conf.size_per_head     = 64;
-    attention_conf.tokens_per_block  = 4;
-    attention_conf.is_causal         = true;
-    attention_conf.rope_config.style = RopeStyle::Base;
-    attention_conf.rope_config.dim   = attention_conf.size_per_head;
-    attention_conf.rope_config.base  = 1000000;
+    attention_conf.head_num                = 16;
+    attention_conf.kv_head_num             = 16;
+    attention_conf.size_per_head           = 64;
+    attention_conf.tokens_per_block        = 4;
+    attention_conf.kernel_tokens_per_block = 4;
+    attention_conf.is_causal               = true;
+    attention_conf.rope_config.style       = RopeStyle::Base;
+    attention_conf.rope_config.dim         = attention_conf.size_per_head;
+    attention_conf.rope_config.base        = 1000000;
 
     const size_t layer_num  = 2;
     const size_t block_num  = 1024;

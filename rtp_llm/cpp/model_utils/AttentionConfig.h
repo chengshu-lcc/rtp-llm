@@ -32,7 +32,8 @@ struct AttentionConfigs {
     RopeConfig rope_config;
 
     // kv cache block
-    size_t tokens_per_block = 8;
+    size_t tokens_per_block        = 8;
+    size_t kernel_tokens_per_block = 0;
 
     float q_scaling         = 1.0f;
     bool  fuse_qkv_add_bias = true;
@@ -48,9 +49,9 @@ struct AttentionConfigs {
     size_t v_head_dim;
 
     // softmax config
-    float           softmax_extra_scale  = 1.0f;
-    KvCacheDataType kv_cache_dtype       = KvCacheDataType::BASE;
-    bool            need_rope_kv_cache = true;
+    float           softmax_extra_scale = 1.0f;
+    KvCacheDataType kv_cache_dtype      = KvCacheDataType::BASE;
+    bool            need_rope_kv_cache  = true;
 
     // data type for attention computation
     c10::ScalarType dtype = c10::ScalarType::Half;

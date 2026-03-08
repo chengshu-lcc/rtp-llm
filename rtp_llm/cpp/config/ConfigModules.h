@@ -139,16 +139,17 @@ struct KVCacheConfig {
     int64_t                                 memory_cache_sync_timeout_ms = 10000;
     int                                     linear_step                  = 1;  // for linear attention cache reuse
     // Fields merged from PyKvCacheConfig
-    int         int8_kv_cache       = 0;
-    int         fp8_kv_cache        = 0;
-    int64_t     kv_cache_mem_mb     = -1;
-    int         seq_size_per_block  = 64;
-    int         test_block_num      = 0;
-    int         use_block_cache     = -1;  // -1 means not set, use Optional<int> equivalent
-    bool        enable_device_cache = true;
-    bool        enable_memory_cache = false;
-    bool        enable_remote_cache = false;
-    bool        write_cache_sync    = false;
+    int         int8_kv_cache             = 0;
+    int         fp8_kv_cache              = 0;
+    int64_t     kv_cache_mem_mb           = -1;
+    int         seq_size_per_block        = 64;
+    int         kernel_seq_size_per_block = 0;  // 0 means same as seq_size_per_block
+    int         test_block_num            = 0;
+    int         use_block_cache           = -1;  // -1 means not set, use Optional<int> equivalent
+    bool        enable_device_cache       = true;
+    bool        enable_memory_cache       = false;
+    bool        enable_remote_cache       = false;
+    bool        write_cache_sync          = false;
     void        insertMultiTaskPromptTokens(std::string task_id, std::vector<int64_t> tokens_id);
     std::string to_string() const;
 };
@@ -469,7 +470,7 @@ struct ArpcConfig {
 struct GrpcConfig {
     std::map<std::string, int> client_config;
     std::map<std::string, int> server_config;
-    GrpcConfig(){};
+    GrpcConfig() {};
     GrpcConfig(const std::string& json_str);
     std::string                to_string() const;
     void                       from_json(const std::string& json_str);

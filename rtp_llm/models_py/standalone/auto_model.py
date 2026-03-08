@@ -151,6 +151,9 @@ class AutoModel:
         self.tokens_per_block = self.model_config.attn_config.tokens_per_block
 
         self.kv_cache.seq_size_per_block = self.tokens_per_block
+        self.kv_cache.kernel_seq_size_per_block = (
+            self.model_config.attn_config.kernel_tokens_per_block
+        )
         self.kv_cache.num_kv_heads = self.kv_head_num
         self.kv_cache.head_dim = self.size_per_head
 

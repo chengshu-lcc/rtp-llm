@@ -3,11 +3,7 @@ import libth_transformer_config
 import torch
 import typing
 from . import rtp_llm_ops
-<<<<<<< HEAD
 __all__: list[str] = ['BertEmbeddingInputs', 'DeviceExporter', 'DeviceType', 'LayerKVCache', 'KVCache', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyContextParallelParams', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_scalar_type', 'get_typemeta', 'init_device', 'rtp_llm_ops']
-=======
-__all__: list[str] = ['BertEmbeddingInputs', 'DeviceExporter', 'DeviceType', 'LayerKVCache', 'KVCache', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_typemeta', 'init_device', 'rtp_llm_ops']
->>>>>>> fix: refactor KVCache and add LayerKVCache
 class BertEmbeddingInputs:
     @typing.overload
     def __init__(self) -> None:
@@ -152,6 +148,7 @@ class KVCache:
     kv_cache_base_by_layer: list[torch.Tensor]
     kv_scale_base_by_layer: list[torch.Tensor]
     seq_size_per_block: int
+    kernel_seq_size_per_block: int
     num_kv_heads: int
     head_dim: int
     use_mla: bool

@@ -248,6 +248,9 @@ CacheLayerLayout KVCacheManager::getMainModelCacheLayerLayout() const {
         layout.layers_to_scale_buffer_ptrs.resize(config_.layer_num);
     }
 
+    layout.layer_to_groups = config_.layer_to_group_id;
+    layout.group_types     = config_.group_types;
+
     RTP_LLM_CHECK_WITH_INFO(config_.layer_num <= all_layer_tensors.size(),
                             "config_.layer_num[%d] > all_layer_tensors.size()[%ld]",
                             config_.layer_num,

@@ -135,7 +135,7 @@ class MlaFlashInferPrefillImpl(MlaFlashInferImplBase):
                 attn_configs.kv_lora_rank,
                 attn_configs.rope_head_dim,
                 attn_configs.nope_head_dim,
-                attn_configs.tokens_per_block,
+                attn_configs.kernel_tokens_per_block,
                 attn_configs.softmax_extra_scale,
                 attn_configs.use_mla,
                 weights,
@@ -144,16 +144,16 @@ class MlaFlashInferPrefillImpl(MlaFlashInferImplBase):
             MlaRotaryEmbeddingOp(
                 head_size=attn_configs.nope_head_dim,
                 cos_sin_cache=cos_sin_cache,
-                token_per_block=attn_configs.tokens_per_block,
+                token_per_block=attn_configs.kernel_tokens_per_block,
                 is_neox_style=False,
             ),
             MlaKVCacheWriteOp(
                 kv_lora_rank=attn_configs.kv_lora_rank,
                 rope_head_dim=attn_configs.rope_head_dim,
-                token_per_block=attn_configs.tokens_per_block,
+                token_per_block=attn_configs.kernel_tokens_per_block,
             ),
             attn_inputs,
-            attn_configs.tokens_per_block,
+            attn_configs.kernel_tokens_per_block,
             is_cuda_graph,
         )
         self.has_reuse_cache = False
@@ -170,7 +170,7 @@ class MlaFlashInferPrefillImpl(MlaFlashInferImplBase):
                 attn_configs.kv_lora_rank,
                 attn_configs.rope_head_dim,
                 attn_configs.nope_head_dim,
-                attn_configs.tokens_per_block,
+                attn_configs.kernel_tokens_per_block,
                 attn_configs.softmax_extra_scale,
                 attn_configs.use_mla,
                 weights,
@@ -272,7 +272,7 @@ class MlaFlashInferDecodeImpl(MlaFlashInferImplBase):
                 attn_configs.kv_lora_rank,
                 attn_configs.rope_head_dim,
                 attn_configs.nope_head_dim,
-                attn_configs.tokens_per_block,
+                attn_configs.kernel_tokens_per_block,
                 attn_configs.softmax_extra_scale,
                 attn_configs.use_mla,
                 weights,
@@ -284,16 +284,16 @@ class MlaFlashInferDecodeImpl(MlaFlashInferImplBase):
             MlaRotaryEmbeddingOp(
                 head_size=attn_configs.nope_head_dim,
                 cos_sin_cache=cos_sin_cache,
-                token_per_block=attn_configs.tokens_per_block,
+                token_per_block=attn_configs.kernel_tokens_per_block,
                 is_neox_style=False,
             ),
             MlaKVCacheWriteOp(
                 kv_lora_rank=attn_configs.kv_lora_rank,
                 rope_head_dim=attn_configs.rope_head_dim,
-                token_per_block=attn_configs.tokens_per_block,
+                token_per_block=attn_configs.kernel_tokens_per_block,
             ),
             attn_inputs,
-            attn_configs.tokens_per_block,
+            attn_configs.kernel_tokens_per_block,
             is_cuda_graph,
         )
 

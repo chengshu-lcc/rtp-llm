@@ -156,6 +156,7 @@ class MLABenchmark(TestCase):
         config.attn_config.v_head_dim = 128
         config.attn_config.q_lora_rank = 0
         config.attn_config.tokens_per_block = 64
+        config.attn_config.kernel_tokens_per_block = 64
         config.attn_config.softmax_extra_scale = 1.0
         config.attn_config.use_mla = True
         config.attn_config.size_per_head = 192

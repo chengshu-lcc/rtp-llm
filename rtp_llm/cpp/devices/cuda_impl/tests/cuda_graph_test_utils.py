@@ -121,6 +121,10 @@ class CudaGraphTestModelBuilder:
         )
         model_config.attn_config.is_causal = is_casual
         model_config.attn_config.need_rope_kv_cache = is_casual
+        # Ensure kernel_tokens_per_block is consistent with tokens_per_block for tests.
+        model_config.attn_config.kernel_tokens_per_block = (
+            model_config.attn_config.tokens_per_block
+        )
         # Update engine_config based on model_config
         ModelFactory.update_engine_config_from_model_config(
             engine_config=engine_config,
