@@ -31,7 +31,16 @@ struct CacheConfig {
 
     // Block configuration
     uint32_t block_num;
-    size_t   seq_size_per_block = 1;
+    size_t   seq_size_per_block        = 1;
+    size_t   kernel_seq_size_per_block = 0;
+
+    // Returns how many kernel blocks fit inside one physical (kv-manager) block.
+    size_t blocksPerKvBlock() const {
+        if (kernel_seq_size_per_block > 0 && kernel_seq_size_per_block <= seq_size_per_block) {
+            return seq_size_per_block / kernel_seq_size_per_block;
+        }
+        return 1;
+    }
 
     // Block sizing information
     // ---- Per-block sizes (all layers) ----
@@ -84,6 +93,7 @@ struct CacheConfig {
         os << indent1 << "# Block Configuration:\n";
         OUTPUT_FIELD(block_num);
         OUTPUT_FIELD(seq_size_per_block);
+        OUTPUT_FIELD(kernel_seq_size_per_block);
         os << "\n";
 
         // Block sizing information section

@@ -2,20 +2,163 @@
 
 namespace rtp_llm {
 
-void KVCacheResource::initGroups(int group_num, int layer_num, const std::vector<int>& layer_to_group_id) {
+size_t BlockIds::blocksNum() const {
+    return block_indices.size();
+}
+
+const BlockIndicesType& BlockIds::blocks() const {
+    return block_indices;
+}
+
+const BlockIndicesType& BlockIds::kernelBlocks() const {
+    return kernel_block_indices_;
+}
+
+size_t BlockIds::blocksPerKvBlock() const {
+    return blocks_per_kv_block_;
+}
+
+bool BlockIds::isFull() const {
+    return is_full_;
+}
+
+BlockIdxType BlockIds::popBack() {
+    RTP_LLM_CHECK(!block_indices.empty());
+    const BlockIdxType val = block_indices.back();
+    block_indices.pop_back();
+    if (!is_full_) {
+        kernel_block_indices_.pop_back();
+    } else {
+        kernel_block_indices_.resize(block_indices.size() * blocks_per_kv_block_);
+    }
+    return val;
+}
+
+void BlockIds::add(const BlockIndicesType& ids) {
+    const size_t old_size = block_indices.size();
+    block_indices.insert(block_indices.end(), ids.begin(), ids.end());
+    if (!is_full_) {
+        kernel_block_indices_.insert(kernel_block_indices_.end(), ids.begin(), ids.end());
+    } else {
+        kernel_block_indices_.resize((old_size + ids.size()) * blocks_per_kv_block_);
+        for (size_t i = 0; i < ids.size(); ++i) {
+            updateKernelSlotAt(old_size + i, ids[i], "add");
+        }
+    }
+}
+
+void BlockIds::remove(const std::vector<size_t>& indices) {
+    for (auto idx : indices) {
+        RTP_LLM_CHECK(idx < block_indices.size());
+        block_indices[idx] = static_cast<BlockIdxType>(-1);  // NULL_BLOCK_IDX
+        updateKernelSlotAt(idx, static_cast<BlockIdxType>(-1), "remove");
+    }
+}
+
+void BlockIds::swap(size_t pos_a, size_t pos_b) {
+    RTP_LLM_CHECK(pos_a < block_indices.size());
+    RTP_LLM_CHECK(pos_b < block_indices.size());
+    if (pos_a == pos_b) {
+        return;
+    }
+    std::swap(block_indices[pos_a], block_indices[pos_b]);
+    updateKernelSlotAt(pos_a, block_indices[pos_a], "swap");
+    updateKernelSlotAt(pos_b, block_indices[pos_b], "swap");
+}
+
+void BlockIds::assign(const BlockIndicesType& new_block_indices) {
+    block_indices = new_block_indices;
+    syncKernelBlocks();
+}
+
+void BlockIds::assign(BlockIndicesType&& new_block_indices) {
+    block_indices = std::move(new_block_indices);
+    syncKernelBlocks();
+}
+
+void BlockIds::setAt(size_t pos, BlockIdxType val) {
+    RTP_LLM_CHECK(pos < block_indices.size());
+    block_indices[pos] = val;
+    updateKernelSlotAt(pos, val, "setAt");
+}
+
+void BlockIds::resize(size_t new_size, BlockIdxType value) {
+    const size_t old_size = block_indices.size();
+    block_indices.resize(new_size, value);
+    if (!is_full_) {
+        kernel_block_indices_.resize(new_size, value);
+    } else {
+        kernel_block_indices_.resize(new_size * blocks_per_kv_block_);
+        for (size_t i = old_size; i < new_size; ++i) {
+            updateKernelSlotAt(i, value, "resize");
+        }
+    }
+}
+
+void BlockIds::updateKernelSlotAt(size_t pos, BlockIdxType val, const char* caller) {
+    if (!is_full_) {
+        RTP_LLM_CHECK_WITH_INFO(pos < kernel_block_indices_.size(),
+                                "[%s] OOB: pos=%zu >= kernel size=%zu (is_full=false)",
+                                caller,
+                                pos,
+                                kernel_block_indices_.size());
+        kernel_block_indices_[pos] = val;
+        return;
+    }
+    const size_t bpk      = blocks_per_kv_block_;
+    const size_t base_pos = pos * bpk;
+    RTP_LLM_CHECK_WITH_INFO(base_pos + bpk <= kernel_block_indices_.size(),
+                            "[%s] OOB: base_pos=%zu + bpk=%zu > kernel size=%zu (is_full=true, physical_blocks=%zu)",
+                            caller,
+                            base_pos,
+                            bpk,
+                            kernel_block_indices_.size(),
+                            block_indices.size());
+    if (val < 0) {
+        for (size_t j = 0; j < bpk; ++j) {
+            kernel_block_indices_[base_pos + j] = val;
+        }
+    } else {
+        const BlockIdxType base = val * static_cast<BlockIdxType>(bpk);
+        for (size_t j = 0; j < bpk; ++j) {
+            kernel_block_indices_[base_pos + j] = base + static_cast<BlockIdxType>(j);
+        }
+    }
+}
+
+void BlockIds::syncKernelBlocks() {
+    if (!is_full_) {
+        kernel_block_indices_ = block_indices;
+        return;
+    }
+    const size_t n   = block_indices.size();
+    const size_t bpk = blocks_per_kv_block_;
+    kernel_block_indices_.resize(n * bpk);
+    for (size_t i = 0; i < n; ++i) {
+        updateKernelSlotAt(i, block_indices[i]);
+    }
+}
+
+void KVCacheResource::initGroups(int                                group_num,
+                                 int                                layer_num,
+                                 const std::vector<int>&            layer_to_group_id,
+                                 size_t                             blocks_per_kv_block,
+                                 const std::vector<CacheGroupType>& group_types) {
     group_block_ids.clear();
     layer_block_ids.clear();
 
     group_block_ids.reserve(static_cast<size_t>(group_num));
     for (int i = 0; i < group_num; i++) {
-        group_block_ids.push_back(std::make_shared<BlockIds>());
+        const bool is_full = group_types.empty() || group_types[static_cast<size_t>(i)] == CacheGroupType::FULL;
+        auto       bid     = std::make_shared<BlockIds>(blocks_per_kv_block, is_full);
+        group_block_ids.push_back(std::move(bid));
     }
-    
+
     int gid = 0;
     if (!group_block_ids.empty()) {
         layer_block_ids.resize(layer_num);
         for (int i = 0; i < layer_num; ++i) {
-            gid = layer_to_group_id[i];
+            gid                = layer_to_group_id[i];
             layer_block_ids[i] = group_block_ids[gid];
         }
     }
@@ -32,9 +175,19 @@ int KVCacheResource::blocksNum(int group_id) const {
     return static_cast<int>(group_block_ids[group_id]->blocksNum());
 }
 
-BlockIndicesType& KVCacheResource::blocks(int group_id) const {
+const BlockIndicesType& KVCacheResource::blocks(int group_id) const {
     RTP_LLM_CHECK(group_block_ids.size() > static_cast<size_t>(group_id));
     return group_block_ids[group_id]->blocks();
+}
+
+const BlockIndicesType& KVCacheResource::kernelBlocks(int group_id) const {
+    RTP_LLM_CHECK(group_block_ids.size() > static_cast<size_t>(group_id));
+    return group_block_ids[group_id]->kernelBlocks();
+}
+
+BlockIds& KVCacheResource::mutableBlockIds(int group_id) const {
+    RTP_LLM_CHECK(group_block_ids.size() > static_cast<size_t>(group_id));
+    return *group_block_ids[group_id];
 }
 
 int KVCacheResource::groupNums() const {

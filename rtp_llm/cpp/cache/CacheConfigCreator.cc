@@ -7,6 +7,7 @@
 #include "rtp_llm/cpp/cache/SingleConfigCreator.h"
 #include "rtp_llm/cpp/devices/DeviceFactory.h"
 #include "rtp_llm/cpp/utils/Logger.h"
+#include "rtp_llm/cpp/utils/AssertUtils.h"
 
 namespace rtp_llm {
 
@@ -30,6 +31,16 @@ CacheConfig CacheConfigCreator::createConfig(const ModelConfig&                 
     uint32_t    block_num = 0;
 
     config.linear_step = kv_cache_config.linear_step;
+    if (kv_cache_config.kernel_seq_size_per_block > 0) {
+        RTP_LLM_CHECK_WITH_INFO(kv_cache_config.seq_size_per_block % kv_cache_config.kernel_seq_size_per_block == 0,
+                                "seq_size_per_block(%d) must be divisible by kernel_seq_size_per_block(%d)",
+                                kv_cache_config.seq_size_per_block,
+                                kv_cache_config.kernel_seq_size_per_block);
+        config.kernel_seq_size_per_block = static_cast<size_t>(kv_cache_config.kernel_seq_size_per_block);
+    } else {
+        // Default: kernel block size == physical block size (no split).
+        config.kernel_seq_size_per_block = config.seq_size_per_block;
+    }
     if (kv_cache_config.test_block_num > 0) {
         RTP_LLM_LOG_INFO("KVCacheConfig explicitly specified kv cache block num %d", kv_cache_config.test_block_num);
         block_num = kv_cache_config.test_block_num;

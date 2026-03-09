@@ -810,6 +810,12 @@ def build_model_config(
         kv_cache_config=kv_cache_config, act_type=model_args.act_type
     )
     model_config.attn_config.tokens_per_block = kv_cache_config.seq_size_per_block
+    # kernel_seq_size_per_block is always set (defaults to seq_size_per_block when not configured via env).
+    model_config.attn_config.kernel_tokens_per_block = (
+        kv_cache_config.kernel_seq_size_per_block
+        if kv_cache_config.kernel_seq_size_per_block > 0
+        else kv_cache_config.seq_size_per_block
+    )
 
     model_config.use_kvcache = model_config.task_type == TaskType.LANGUAGE_MODEL
     logging.info(
