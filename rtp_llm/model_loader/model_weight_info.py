@@ -248,6 +248,7 @@ class ModelDeployWeightInfo:
 
         # for moe
         self._use_stack_weight = False
+        self._moe_pure_tp_mode = (self.tp_size > 1 and self.dp_size == 1 and self.ep_size == 1)
 
         self.gen_dummy_reciprocal = (
             model_config.attn_config.kv_cache_dtype == KvCacheDataType.FP8
@@ -588,6 +589,7 @@ class ModelDeployWeightInfo:
             head_num_kv=self._head_num_kv,
             size_per_head=self._size_per_head,
             use_stack_weight=self._use_stack_weight,
+            moe_pure_tp_mode=self._moe_pure_tp_mode,
             align_size=self._align_size,
             moe_align_size=self._moe_align_size_for_padding,
             moe_layer_index=self.moe_layer_index_,
