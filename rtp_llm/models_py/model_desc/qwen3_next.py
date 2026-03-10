@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -49,6 +50,61 @@ from rtp_llm.ops.compute_ops import (
     PyModelOutputs,
 )
 from rtp_llm.utils.model_weight import W
+
+# Global flag and directory for precision debug dumping.
+# Set environment variable QWEN3_NEXT_DUMP_DIR to enable dumping,
+# e.g. export QWEN3_NEXT_DUMP_DIR=/tmp/qwen3_next_dump
+#
+# When running with TP > 1, each rank writes to its own sub-directory
+# (rank_0/, rank_1/, ...) to avoid file write conflicts. For precision
+# comparison you typically only need rank_0's output since all dump
+# points are placed *after* all_reduce and contain identical values
+# across ranks.
+_DUMP_DIR = os.environ.get("QWEN3_NEXT_DUMP_DIR", "")
+_DUMP_ENABLED = bool(_DUMP_DIR)
+_DUMP_STEP_COUNTER = 0
+_DUMP_RANK: Optional[int] = None
+
+
+def _get_dump_rank() -> int:
+    """Get the current process rank for TP-safe dump directory isolation."""
+    global _DUMP_RANK
+    if _DUMP_RANK is not None:
+        return _DUMP_RANK
+    rank = 0
+    try:
+        if torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+        else:
+            rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    except Exception:
+        rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    _DUMP_RANK = rank
+    return rank
+
+
+def _dump_tensor(tensor: torch.Tensor, name: str):
+    """Save a tensor to disk for precision debugging.
+
+    Tensors are saved as .pt files under _DUMP_DIR/rank_R/step_S/.
+    When TP > 1, each rank writes to its own rank_R/ sub-directory to
+    avoid file conflicts. All dump points are placed after all_reduce,
+    so rank_0's data is sufficient for comparison with HuggingFace.
+    """
+    if not _DUMP_ENABLED:
+        return
+    rank = _get_dump_rank()
+    step_dir = os.path.join(_DUMP_DIR, f"rank_{rank}", f"step_{_DUMP_STEP_COUNTER}")
+    os.makedirs(step_dir, exist_ok=True)
+    file_path = os.path.join(step_dir, f"{name}.pt")
+    torch.save(tensor.detach().cpu(), file_path)
+
+
+def _increment_dump_step():
+    """Advance the global dump step counter (call once per forward pass)."""
+    global _DUMP_STEP_COUNTER
+    if _DUMP_ENABLED:
+        _DUMP_STEP_COUNTER += 1
 
 
 def _is_target_verify(attention_inputs: PyAttentionInputs) -> bool:
@@ -663,6 +719,9 @@ class Qwen3NextDecoderLayer(nn.Module):
         attention_inputs: Optional[PyAttentionInputs] = None,
         attn_meta: Qwen3NextMetadata = Qwen3NextMetadata(),
     ) -> torch.Tensor:
+        layer_prefix = f"layer_{self.layer_idx}"
+        _dump_tensor(hidden_states, f"{layer_prefix}_input")
+
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
@@ -674,11 +733,15 @@ class Qwen3NextDecoderLayer(nn.Module):
             attn_meta=attn_meta,
         )
         hidden_states = residual + hidden_states
+        _dump_tensor(hidden_states, f"{layer_prefix}_after_attn")
+
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
+        _dump_tensor(hidden_states, f"{layer_prefix}_output")
+
         return hidden_states
 
 
@@ -758,6 +821,7 @@ class Qwen3NextModel(GptModelBase):
 
     def forward(self, inputs: PyModelInputs, fmha_impl: Any = None) -> PyModelOutputs:
         input_ids: torch.Tensor = inputs.input_ids
+        _dump_tensor(input_ids, "input_ids")
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
 
@@ -787,6 +851,8 @@ class Qwen3NextModel(GptModelBase):
         if fmha_impl is None:
             fmha_impl = self.prepare_fmha_impl(inputs)
 
+        _dump_tensor(hidden_states, "embedding_output")
+
         for i, decoder_layer in enumerate(self.layers):
             # Switch to correct block_map for this layer in hybrid attention mode
             gid = self._select_block_map_for_layer(attention_inputs, i)
@@ -799,4 +865,6 @@ class Qwen3NextModel(GptModelBase):
             )
 
         hidden_states = self.norm(hidden_states)
+        _dump_tensor(hidden_states, "final_norm_output")
+        _increment_dump_step()
         return PyModelOutputs(hidden_states, fmha_impl.fmha_params)
