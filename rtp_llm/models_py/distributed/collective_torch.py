@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import gc
 import logging
 import os
@@ -30,6 +31,133 @@ class Group(Enum):
 _group_map: Dict[Union[Group, str], torch.distributed.ProcessGroup] = {}
 _parallelism_config: Optional[ParallelismConfig] = None
 _initialized: bool = False  # Track if we've initialized (to prevent double init)
+
+_NCCL_SUCCESS = 0
+_NCCL_SUM = 0
+_NCCL_DTYPE_MAP = {
+    torch.int32: 2,
+    torch.int64: 4,
+    torch.float16: 6,
+    torch.float32: 7,
+    torch.bfloat16: 9,
+}
+
+_rccl_lib: Optional[ctypes.CDLL] = None
+_rccl_comm: Optional[ctypes.c_void_p] = None
+_rccl_world_size: int = 1
+_in_hipgraph_capture: bool = False
+_is_rocm_runtime: bool = getattr(torch.version, "hip", None) is not None
+
+
+def _load_rccl() -> Optional[ctypes.CDLL]:
+    global _rccl_lib
+    if _rccl_lib is not None:
+        return _rccl_lib
+    for name in ("librccl.so.1", "librccl.so", "libnccl.so.2", "libnccl.so"):
+        try:
+            _rccl_lib = ctypes.CDLL(name)
+            break
+        except OSError:
+            continue
+    return _rccl_lib
+
+
+def _setup_rccl_api(lib: ctypes.CDLL) -> None:
+    lib.ncclAllReduce.restype = ctypes.c_int
+    lib.ncclAllReduce.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    lib.ncclAllGather.restype = ctypes.c_int
+    lib.ncclAllGather.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+
+
+def set_hipgraph_capture_nccl_comm(
+    nccl_comm_handle: int, world_size: int, rank: int
+) -> None:
+    del rank
+    global _rccl_comm, _rccl_world_size
+    if not _is_rocm_runtime:
+        return
+    lib = _load_rccl()
+    if lib is None:
+        logging.warning("set_hipgraph_capture_nccl_comm: RCCL library not available")
+        return
+    _setup_rccl_api(lib)
+    _rccl_comm = ctypes.c_void_p(nccl_comm_handle)
+    _rccl_world_size = world_size
+
+
+def enter_hipgraph_capture_mode(
+    nccl_comm_handle: int = 0, world_size: int = 0, rank: int = 0
+) -> None:
+    global _in_hipgraph_capture
+    if nccl_comm_handle != 0:
+        set_hipgraph_capture_nccl_comm(nccl_comm_handle, world_size, rank)
+    _in_hipgraph_capture = True
+
+
+def exit_hipgraph_capture_mode() -> None:
+    global _in_hipgraph_capture
+    _in_hipgraph_capture = False
+
+
+def _should_use_hipgraph_capture_rccl(group: Group) -> bool:
+    return (
+        _is_rocm_runtime
+        and group == Group.TP
+        and _in_hipgraph_capture
+        and _rccl_comm is not None
+    )
+
+
+def _hipgraph_capture_all_reduce(tensor: torch.Tensor) -> None:
+    lib = _load_rccl()
+    assert lib is not None and _rccl_comm is not None
+    result = lib.ncclAllReduce(
+        tensor.data_ptr(),
+        tensor.data_ptr(),
+        tensor.numel(),
+        _NCCL_DTYPE_MAP[tensor.dtype],
+        _NCCL_SUM,
+        _rccl_comm,
+        torch.cuda.current_stream().cuda_stream,
+    )
+    if result != _NCCL_SUCCESS:
+        raise RuntimeError(f"ncclAllReduce failed with error code {result}")
+
+
+def _hipgraph_capture_all_gather(tensor: torch.Tensor) -> torch.Tensor:
+    lib = _load_rccl()
+    assert lib is not None and _rccl_comm is not None
+    output = torch.zeros(
+        [_rccl_world_size * tensor.shape[0]] + list(tensor.shape)[1:],
+        device=tensor.device,
+        dtype=tensor.dtype,
+    )
+    result = lib.ncclAllGather(
+        tensor.data_ptr(),
+        output.data_ptr(),
+        tensor.numel(),
+        _NCCL_DTYPE_MAP[tensor.dtype],
+        _rccl_comm,
+        torch.cuda.current_stream().cuda_stream,
+    )
+    if result != _NCCL_SUCCESS:
+        raise RuntimeError(f"ncclAllGather failed with error code {result}")
+    return output
 
 
 def init_distributed_environment(
@@ -386,6 +514,10 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
     Returns:
         All-reduced tensor (same as input tensor)
     """
+    if _should_use_hipgraph_capture_rccl(group):
+        _hipgraph_capture_all_reduce(tensor)
+        return tensor
+
     if group == Group.TP:
         symm_mem_comm = get_symm_mem_communicator()
         if symm_mem_comm is not None and symm_mem_comm.should_torch_symm_mem_allreduce(
@@ -411,6 +543,9 @@ def all_gather(tensor: torch.Tensor, group: Group) -> torch.Tensor:
         Concatenated tensor containing all gathered tensors
         (shape: [world_size * tensor.shape[0]] + list(tensor.shape)[1:])
     """
+    if _should_use_hipgraph_capture_rccl(group):
+        return _hipgraph_capture_all_gather(tensor)
+
     if group == Group.TP:
         symm_mem_comm = get_symm_mem_communicator()
         if symm_mem_comm is not None and symm_mem_comm.should_torch_symm_mem_allgather(
@@ -456,6 +591,9 @@ __all__ = [
     "init_user_buffers_environment",
     "distributed_environment_initialized",
     "destroy_distributed_environment",
+    "set_hipgraph_capture_nccl_comm",
+    "enter_hipgraph_capture_mode",
+    "exit_hipgraph_capture_mode",
     "send",
     "recv",
     "broadcast",

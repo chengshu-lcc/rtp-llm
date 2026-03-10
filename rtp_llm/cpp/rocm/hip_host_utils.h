@@ -32,6 +32,8 @@ void throwRocmError(const char* const file, int const line, std::string const& i
 template<typename T>
 void check(T result, const char* const file, int const line);
 void syncAndCheckInDebug(const char* const file, int const line);
+void setHipGraphCaptureEnabled(bool enabled);
+bool isHipGraphCaptureEnabled();
 
 int get_sm();
 int getDevice();
@@ -40,4 +42,5 @@ int getMultiProcessorCount(int device_id = -1);
 int getMaxSharedMemoryPerMultiprocessor(int device_id = -1);
 
 }  // namespace rocm
+
 }  // namespace rtp_llm

@@ -4,6 +4,18 @@
 namespace rtp_llm {
 namespace rocm {
 
+namespace {
+bool in_hip_graph_capture = false;
+}
+
+void setHipGraphCaptureEnabled(bool enabled) {
+    in_hip_graph_capture = enabled;
+}
+
+bool isHipGraphCaptureEnabled() {
+    return in_hip_graph_capture;
+}
+
 static const char* _hipGetErrorEnum(hipError_t error) {
     return hipGetErrorString(error);
 }
@@ -70,7 +82,9 @@ void check(T result, const char* const file, int const line) {
 
 void syncAndCheckInDebug(const char* const file, int const line) {
     if (rtp_llm::Logger::getEngineLogger().isDebugMode()) {
-        ROCM_CHECK(hipDeviceSynchronize());
+        if (!isHipGraphCaptureEnabled()) {
+            ROCM_CHECK(hipDeviceSynchronize());
+        }
         check(hipGetLastError(), file, line);
         RTP_LLM_LOG_DEBUG(rtp_llm::fmtstr("run syncAndCheckInDebug at %s:%d", file, line));
     }

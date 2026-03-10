@@ -102,13 +102,21 @@ class FMHAParams(ParamsBase):
             else:
                 self.seq_lens = None
 
-    def fillParams(self, sequence_lengths, input_lengths, kv_cache_block_id_host):
+    def fillParams(
+        self,
+        sequence_lengths,
+        input_lengths,
+        kv_cache_block_id_host=None,
+        kv_cache_block_id_device=None,
+    ):
         self.sequence_lengths = sequence_lengths
         self.input_lengths = input_lengths
         self.kv_cache_block_id_host = kv_cache_block_id_host
+        if kv_cache_block_id_device is not None:
+            self.kv_cache_block_id_device = kv_cache_block_id_device
         if self.seq_lens is not None and self.sequence_lengths is not None:
             self.seq_lens.copy_((self.sequence_lengths + 1).to(torch.device("cuda")))
-            self.max_seq_len = 8192
+            self.max_seq_len = 8192 if self.enable_cuda_graph else self.max_seq_len
 
     def check_recycle(self) -> bool:
         """Check whether the params can be recycled automatically."""
@@ -525,6 +533,19 @@ class AiterDecodeImplAsm(FMHAImplBase):
         # Execute FMHA forward
         return self.fmha_impl.forward(fmha_input, kv_cache, self.fmha_params)
 
+    def prepare_cuda_graph(self, attn_inputs: PyAttentionInputs):
+        # Replay path must reuse capture-time FMHA params object to keep graph memory stable.
+        self.fmha_params.fillParams(
+            attn_inputs.sequence_lengths,
+            attn_inputs.input_lengths,
+            attn_inputs.kv_cache_block_id_host,
+            attn_inputs.kv_cache_block_id_device,
+        )
+        if hasattr(self.rope_params, "update_kv_cache_offset"):
+            self.rope_params.update_kv_cache_offset(
+                attn_inputs.kv_cache_block_id_device
+            )
+
 
 class AiterDecodeImplNonAsm(FMHAImplBase):
     def __init__(
@@ -570,3 +591,16 @@ class AiterDecodeImplNonAsm(FMHAImplBase):
 
         # Execute FMHA forward
         return self.fmha_impl.forward(fmha_input, kv_cache, self.fmha_params)
+
+    def prepare_cuda_graph(self, attn_inputs: PyAttentionInputs):
+        # Replay path must reuse capture-time FMHA params object to keep graph memory stable.
+        self.fmha_params.fillParams(
+            attn_inputs.sequence_lengths,
+            attn_inputs.input_lengths,
+            attn_inputs.kv_cache_block_id_host,
+            attn_inputs.kv_cache_block_id_device,
+        )
+        if hasattr(self.rope_params, "update_kv_cache_offset"):
+            self.rope_params.update_kv_cache_offset(
+                attn_inputs.kv_cache_block_id_device
+            )
