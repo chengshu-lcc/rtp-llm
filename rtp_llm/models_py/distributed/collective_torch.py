@@ -206,7 +206,31 @@ def set_hipgraph_capture_nccl_comm(
     # enter/exit capture should not clear this cache because replay relies on
     # stable addresses recorded during capture.
     _hipgraph_allgather_outputs.clear()
+    _pre_init_trtllm_allreduce()
 
+
+def _pre_init_trtllm_allreduce() -> None:
+    """Pre-initialize trt_allreduce before graph capture.
+
+    Must be called before entering graph capture mode so that
+    TrtllmDistEnv.__init__ (which does hipMalloc and dist.all_gather_object)
+    runs outside of stream capture where those operations are forbidden.
+    """
+    if not _is_rocm_runtime:
+        return
+    if _parallelism_config is None or _parallelism_config.tp_size <= 1:
+        return
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            ensure_trtllm_comm_initialized,
+        )
+        tp_group = _get_group(Group.TP)
+        device_id = _parallelism_config.tp_rank
+        ensure_trtllm_comm_initialized(
+            dtype=torch.bfloat16, group=tp_group, device_id=device_id,
+        )
+    except Exception as exc:
+        logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
 
 def enter_hipgraph_capture_mode(
     nccl_comm_handle: int = 0, world_size: int = 0, rank: int = 0
@@ -220,6 +244,11 @@ def enter_hipgraph_capture_mode(
 
 def exit_hipgraph_capture_mode() -> None:
     # Capture state is owned by C++ side and queried via is_hipgraph_capture_enabled().
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import consume_capture
+        consume_capture()
+    except Exception:
+        pass
     return
 
 
@@ -233,7 +262,49 @@ def _should_use_hipgraph_capture_rccl(group: Group) -> bool:
     )
 
 
-def _hipgraph_capture_all_reduce(tensor: torch.Tensor) -> None:
+def _is_trtllm_allreduce_ready() -> bool:
+    """Check if trt_allreduce is already initialized and usable.
+
+    Must not trigger initialization during graph capture, because
+    TrtllmDistEnv.__init__ does hipMalloc and dist.all_gather_object
+    which are forbidden during stream capturing.
+    """
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            _trtllm_comm_manager,
+        )
+        return (
+            _trtllm_comm_manager is not None
+            and _trtllm_comm_manager.initialized
+            and _trtllm_comm_manager.dist_env is not None
+            and not _trtllm_comm_manager.dist_env.disabled
+        )
+    except Exception:
+        return False
+
+def _hipgraph_capture_all_reduce(
+    tensor: torch.Tensor,
+    process_group: torch.distributed.ProcessGroup,
+) -> torch.Tensor:
+    # Only use trt_allreduce if already initialized; never attempt first-time
+    # initialization during graph capture (hipMalloc is forbidden).
+    if _is_trtllm_allreduce_ready():
+        try:
+            from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+                allreduce as trtllm_allreduce,
+            )
+            return trtllm_allreduce(
+                allreduce_in=tensor,
+                group=process_group,
+                device_id=_parallelism_config.tp_rank,
+            )
+        except Exception as e:
+            logging.warning(
+                "trtllm_allreduce failed in graph capture mode, "
+                "fallback to ncclAllReduce: %s", e,
+            )
+
+    # Fallback to lib.ncclAllReduce (in-place, returns original tensor)
     lib, rccl_comm = _get_rccl_runtime()
     result = lib.ncclAllReduce(
         tensor.data_ptr(),
@@ -246,6 +317,7 @@ def _hipgraph_capture_all_reduce(tensor: torch.Tensor) -> None:
     )
     if result != _NCCL_SUCCESS:
         raise RuntimeError(f"ncclAllReduce failed with error code {result}")
+    return tensor
 
 
 def _hipgraph_capture_all_gather(tensor: torch.Tensor) -> torch.Tensor:
@@ -619,8 +691,8 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
         All-reduced tensor (same as input tensor)
     """
     if _should_use_hipgraph_capture_rccl(group):
-        _hipgraph_capture_all_reduce(tensor)
-        return tensor
+        process_group = _get_group(group)
+        return _hipgraph_capture_all_reduce(tensor, process_group)
 
     if group == Group.TP:
         symm_mem_comm = get_symm_mem_communicator()
