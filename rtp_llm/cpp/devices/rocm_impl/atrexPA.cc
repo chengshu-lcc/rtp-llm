@@ -427,6 +427,8 @@ static inline void gpuAssert(hipError_t code, const char* file, int line) {
             CALL_PA_DECODE_REDUCE_KERNEL(128, 16, 16);                                                                 \
         } else if (head_sz == 128 && grp_sz == 16 && partition_num == 32) {                                            \
             CALL_PA_DECODE_REDUCE_KERNEL(128, 16, 32);                                                                 \
+        } else if (head_sz == 256 && grp_sz == 8 && partition_num == 16) {                                             \
+            CALL_PA_DECODE_REDUCE_KERNEL(256, 8, 16);                                                                  \
         } else {                                                                                                       \
             throw std::runtime_error("Unsupported reduce kernel combination: head_size=" + std::to_string(head_sz)     \
                                      + ", grp_size=" + std::to_string(grp_sz)                                          \
