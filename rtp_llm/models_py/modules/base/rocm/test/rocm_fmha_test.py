@@ -471,10 +471,8 @@ def run_atrex(
 ) -> torch.Tensor:
     # Whether to use rocm custom paged attention or not
     num_seqs, num_heads, head_size = query.shape
-    block_size = value_cache.shape[3]    
-    max_num_partitions = (
-        max_seq_len + _PARTITION_SIZE - 1
-    ) // _PARTITION_SIZE
+    block_size = value_cache.shape[3]
+    max_num_partitions = (max_seq_len + _PARTITION_SIZE - 1) // _PARTITION_SIZE
     assert _PARTITION_SIZE % block_size == 0
     x = 16 // key_cache.element_size()
     grp_size = num_heads // num_kv_heads
