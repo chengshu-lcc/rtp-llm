@@ -4,10 +4,7 @@ from typing import Any, Optional, Tuple
 import aiter
 import torch
 
-from rtp_llm.models_py.distributed.collective_torch import (
-    Group,
-    all_reduce,
-)
+from rtp_llm.models_py.distributed.collective_torch import Group, all_reduce
 from rtp_llm.models_py.modules.factory.fused_moe.defs.config_adapter import (
     MoEConfigAdapter,
 )
@@ -138,7 +135,9 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
         super().check_conditions(checker, config)
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
-        checker.check(quant_method == "FP8_PER_CHANNEL_COMPRESSED")
+        checker.check(
+            quant_method in ("FP8_PER_CHANNEL_COMPRESSED", "FP8_PER_CHANNEL_QUARK")
+        )
 
     def _do_quant(
         self, a1: torch.Tensor
@@ -150,3 +149,16 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
         a8_scale = torch.empty((M, 1), dtype=torch.float32, device=a1.device)
         aiter.dynamic_per_token_scaled_quant(a8, a1, a8_scale)
         return a8, a8_scale
+
+    def finalize(
+        self,
+        payload: CombineForwardPayload,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        apply_router_weight_on_input: bool,
+        extra_finalize_args: Optional[dict[str, Any]],
+    ) -> torch.Tensor:
+        fused_expert_output = payload.fused_expert_output
+        if self.tp_size > 1:
+            fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
+        return fused_expert_output
