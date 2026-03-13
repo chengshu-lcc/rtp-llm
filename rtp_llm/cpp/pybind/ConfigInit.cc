@@ -288,6 +288,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("fp8_kv_cache", &KVCacheConfig::fp8_kv_cache)
         .def_readwrite("kv_cache_mem_mb", &KVCacheConfig::kv_cache_mem_mb)
         .def_readwrite("seq_size_per_block", &KVCacheConfig::seq_size_per_block)
+        .def_readwrite("kernel_seq_size_per_block", &KVCacheConfig::kernel_seq_size_per_block)
         .def_readwrite("test_block_num", &KVCacheConfig::test_block_num)
         .def_readwrite("use_block_cache", &KVCacheConfig::use_block_cache)
         .def_readwrite("enable_memory_cache", &KVCacheConfig::enable_memory_cache)
@@ -309,6 +310,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.fp8_kv_cache,
                                       self.kv_cache_mem_mb,
                                       self.seq_size_per_block,
+                                      self.kernel_seq_size_per_block,
                                       self.test_block_num,
                                       self.use_block_cache,
                                       self.enable_device_cache,
@@ -317,7 +319,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.write_cache_sync);
             },
             [](py::tuple t) {
-                if (t.size() != 19)
+                if (t.size() != 20)
                     throw std::runtime_error("Invalid state!");
                 KVCacheConfig c;
                 try {
@@ -334,12 +336,13 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                     c.fp8_kv_cache                 = t[10].cast<int>();
                     c.kv_cache_mem_mb              = t[11].cast<int64_t>();
                     c.seq_size_per_block           = t[12].cast<int>();
-                    c.test_block_num               = t[13].cast<int>();
-                    c.use_block_cache              = t[14].cast<int>();
-                    c.enable_device_cache          = t[15].cast<bool>();
-                    c.enable_memory_cache          = t[16].cast<bool>();
-                    c.enable_remote_cache          = t[17].cast<bool>();
-                    c.write_cache_sync             = t[18].cast<bool>();
+                    c.kernel_seq_size_per_block    = t[13].cast<int>();
+                    c.test_block_num               = t[14].cast<int>();
+                    c.use_block_cache              = t[15].cast<int>();
+                    c.enable_device_cache          = t[16].cast<bool>();
+                    c.enable_memory_cache          = t[17].cast<bool>();
+                    c.enable_remote_cache          = t[18].cast<bool>();
+                    c.write_cache_sync             = t[19].cast<bool>();
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("KVCacheConfig unpickle error: ") + e.what());
                 }
@@ -425,6 +428,8 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("decode_capture_batch_sizes", &HWKernelConfig::decode_capture_batch_sizes)
         .def_readwrite("disable_dpc_random", &HWKernelConfig::disable_dpc_random)
         .def_readwrite("rocm_disable_custom_ag", &HWKernelConfig::rocm_disable_custom_ag)
+        .def_readwrite("deterministic_gemm", &HWKernelConfig::deterministic_gemm)
+        .def_readwrite("deterministic_attn", &HWKernelConfig::deterministic_attn)
         .def("to_string", &HWKernelConfig::to_string)
         .def(py::pickle(
             [](const HWKernelConfig& self) {
@@ -442,10 +447,12 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.prefill_capture_seq_lens,
                                       self.decode_capture_batch_sizes,
                                       self.disable_dpc_random,
-                                      self.rocm_disable_custom_ag);
+                                      self.rocm_disable_custom_ag,
+                                      self.deterministic_gemm,
+                                      self.deterministic_attn);
             },
             [](py::tuple t) {
-                if (t.size() != 15)
+                if (t.size() != 17)
                     throw std::runtime_error("Invalid state!");
                 HWKernelConfig c;
                 try {
@@ -464,6 +471,8 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                     c.decode_capture_batch_sizes   = t[12].cast<std::vector<int>>();
                     c.disable_dpc_random           = t[13].cast<bool>();
                     c.rocm_disable_custom_ag       = t[14].cast<bool>();
+                    c.deterministic_gemm           = t[15].cast<bool>();
+                    c.deterministic_attn           = t[16].cast<bool>();
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("HWKernelConfig unpickle error: ") + e.what());
                 }
@@ -1182,6 +1191,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("size_per_head", &AttentionConfigs::size_per_head)
         .def_readwrite("rope_config", &AttentionConfigs::rope_config)
         .def_readwrite("tokens_per_block", &AttentionConfigs::tokens_per_block)
+        .def_readwrite("kernel_tokens_per_block", &AttentionConfigs::kernel_tokens_per_block)
         .def_readwrite("q_scaling", &AttentionConfigs::q_scaling)
         .def_readwrite("fuse_qkv_add_bias", &AttentionConfigs::fuse_qkv_add_bias)
         .def_readwrite("use_logn_attn", &AttentionConfigs::use_logn_attn)

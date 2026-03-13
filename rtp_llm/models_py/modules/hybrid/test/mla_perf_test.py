@@ -21,7 +21,7 @@ from rtp_llm.models_py.modules.factory.attention.cuda_mla_impl.flashinfer_mla_wr
     MlaFlashInferPrefillImpl,
 )
 from rtp_llm.ops import FMHAConfig
-from rtp_llm.ops.compute_ops import KVCache, PyAttentionInputs
+from rtp_llm.ops.compute_ops import KVCache, LayerKVCache, PyAttentionInputs
 from rtp_llm.utils.model_weight import W
 
 
@@ -157,6 +157,7 @@ class MLABenchmark(TestCase):
         config.attn_config.v_head_dim = 128
         config.attn_config.q_lora_rank = 0
         config.attn_config.tokens_per_block = 64
+        config.attn_config.kernel_tokens_per_block = 64
         config.attn_config.softmax_extra_scale = 1.0
         config.attn_config.use_mla = True
         config.attn_config.size_per_head = 192
@@ -220,7 +221,7 @@ class MLABenchmark(TestCase):
             device=device,
         )
 
-        kv_cache: Optional[KVCache] = KVCache()
+        kv_cache: Optional[LayerKVCache] = LayerKVCache()
         kv_cache.kv_cache_base = cache
 
         # 创建cos_sin_cache

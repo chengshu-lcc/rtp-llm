@@ -15,7 +15,7 @@ from rtp_llm.ops import (
 )
 from rtp_llm.ops.compute_ops import (
     FusedRopeKVCacheDecodeOp,
-    KVCache,
+    LayerKVCache,
     PyAttentionInputs,
     XQAAttnOp,
 )
@@ -105,7 +105,7 @@ class XQAImpl(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
@@ -163,7 +163,7 @@ class XQADecodeImpl(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
@@ -218,7 +218,7 @@ class XQAWrapper:
         ]
         group_size_supported = 1 <= group_size <= 16
         head_dim_supported = self.config.size_per_head in [64, 128, 256]
-        page_size_supported = self.config.tokens_per_block in [16, 32, 64, 128]
+        page_size_supported = self.config.kernel_tokens_per_block in [16, 32, 64, 128]
         return (
             input_type_supported
             and output_type_supported
@@ -296,7 +296,7 @@ class XQAWrapper:
     def forward(
         self,
         q: torch.Tensor,  # [total_tokens, num_heads, head_dim]
-        kv_cache: KVCache,
+        kv_cache: LayerKVCache,
         fmha_params: XQAParams,
     ) -> torch.Tensor:
         # [num_pages, num_kv_heads, page_size, head_dim] - HND layout

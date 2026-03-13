@@ -32,6 +32,7 @@ from rtp_llm.ops import (
 # RTP-LLM imports
 from rtp_llm.ops.compute_ops import (
     KVCache,
+    LayerKVCache,
     PyAttentionInputs,
     get_typemeta,
     init_device,
@@ -331,6 +332,7 @@ class TestXQABatchDecode(unittest.TestCase):
         model_config.attn_config.kv_head_num = 1
         model_config.attn_config.size_per_head = 128
         model_config.attn_config.tokens_per_block = 64
+        model_config.attn_config.kernel_tokens_per_block = 64
         model_config.max_seq_len = 2048
 
         init_device(
@@ -405,12 +407,13 @@ class TestXQABatchDecode(unittest.TestCase):
         attn_configs.kv_head_num = num_kv_heads
         attn_configs.size_per_head = head_dim
         attn_configs.tokens_per_block = page_size
+        attn_configs.kernel_tokens_per_block = page_size
         attn_configs.kv_cache_dtype = (
             KvCacheDataType.FP8 if kv_dtype == "fp8" else KvCacheDataType.BASE
         )
         attn_configs.dtype = q.dtype
 
-        kv_cache = KVCache()
+        kv_cache = LayerKVCache()
         kv_cache.kv_cache_base = kv_cache_tensor
 
         original_init = FMHAImplBase.__init__
@@ -426,7 +429,7 @@ class TestXQABatchDecode(unittest.TestCase):
 
         FMHAImplBase.__init__ = patched_init
         try:
-            attn_configs.need_rope_kv_cache = False            
+            attn_configs.need_rope_kv_cache = False
             xqa_impl = XQADecodeImpl(attn_configs, attn_inputs)
             # Prepare fmha_params with scale parameters
             if kv_dtype == "fp8":

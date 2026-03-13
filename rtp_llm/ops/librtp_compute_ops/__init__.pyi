@@ -3,7 +3,7 @@ import libth_transformer_config
 import torch
 import typing
 from . import rtp_llm_ops
-__all__: list[str] = ['BertEmbeddingInputs', 'DeviceExporter', 'DeviceType', 'KVCache', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyContextParallelParams', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_scalar_type', 'get_typemeta', 'init_device', 'rtp_llm_ops']
+__all__: list[str] = ['BertEmbeddingInputs', 'CacheGroupType', 'DeviceExporter', 'DeviceType', 'LayerKVCache', 'KVCache', 'ParamsBase', 'PyAttentionInputs', 'PyCacheStoreInputs', 'PyCaptureMetaData', 'PyContextParallelParams', 'PyModelInitResources', 'PyModelInputs', 'PyModelOutputs', 'PyPrefillCudaGaphCopyParams', 'TypeMeta', 'get_device', 'get_scalar_type', 'get_typemeta', 'init_device', 'rtp_llm_ops']
 class BertEmbeddingInputs:
     @typing.overload
     def __init__(self) -> None:
@@ -113,15 +113,51 @@ class DeviceType:
     @property
     def value(self) -> int:
         ...
-class KVCache:
-    def __init__(self) -> None:
+class CacheGroupType:
+    """
+    Members:
+    
+      LINEAR
+    
+      FULL
+    """
+    FULL: typing.ClassVar[CacheGroupType]
+    LINEAR: typing.ClassVar[CacheGroupType]
+    __members__: typing.ClassVar[dict[str, CacheGroupType]]
+    def __eq__(self, other: typing.Any) -> bool:
         ...
-    def get_layer_cache(self, arg0: int) -> KVCache:
+    def __getstate__(self) -> int:
+        ...
+    def __hash__(self) -> int:
+        ...
+    def __index__(self) -> int:
+        ...
+    def __init__(self, value: int) -> None:
+        ...
+    def __int__(self) -> int:
+        ...
+    def __ne__(self, other: typing.Any) -> bool:
+        ...
+    def __repr__(self) -> str:
+        ...
+    def __setstate__(self, state: int) -> None:
+        ...
+    def __str__(self) -> str:
+        ...
+    @property
+    def name(self) -> str:
+        ...
+    @property
+    def value(self) -> int:
+        ...
+class LayerKVCache:
+    """Per-layer KV cache view. Returned by KVCache.get_layer_cache()."""
+    def __init__(self) -> None:
         ...
     @property
     def kv_cache_base(self) -> torch.Tensor:
         """
-        Key cache base tensor
+        Key/value cache tensor
         """
     @kv_cache_base.setter
     def kv_cache_base(self, arg0: torch.Tensor) -> None:
@@ -129,7 +165,7 @@ class KVCache:
     @property
     def kv_scale_base(self) -> torch.Tensor:
         """
-        Key cache scale tensor
+        Key/value cache scale tensor
         """
     @kv_scale_base.setter
     def kv_scale_base(self, arg0: torch.Tensor) -> None:
@@ -137,13 +173,29 @@ class KVCache:
     @property
     def layer_id(self) -> int:
         """
-        kv cache layer id
+        Global layer id
         """
     @property
     def seq_size_per_block(self) -> int:
         """
         Sequence size per block
         """
+class KVCache:
+    """Whole-model KV cache holding tensors for all layers."""
+    kv_cache_base_by_layer: list[torch.Tensor]
+    kv_scale_base_by_layer: list[torch.Tensor]
+    seq_size_per_block: int
+    kernel_seq_size_per_block: int
+    num_kv_heads: int
+    head_dim: int
+    use_mla: bool
+    kv_lora_rank: int
+    rope_head_dim: int
+    def __init__(self) -> None:
+        ...
+    def get_layer_cache(self, arg0: int) -> LayerKVCache:
+        """Return a per-layer LayerKVCache for the given global layer id."""
+        ...
 class ParamsBase:
     def __init__(self) -> None:
         ...
@@ -209,7 +261,7 @@ class PyModelInitResources:
     @property
     def kv_cache(self) -> KVCache | None:
         """
-        kv cache
+        Layered kv cache for all layers
         """
 class PyModelInputs:
     @typing.overload

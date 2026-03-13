@@ -16,13 +16,14 @@ namespace test {
 static CacheConfig makeTinyHybridConfig() {
     // 4 layers: [0,1] linear, [2,3] full. gcd(2,2)=2 => group_size=2.
     CacheConfig config;
-    config.dtype              = rtp_llm::DataType::TYPE_FP16;
-    config.layer_num          = 4;
-    config.layer_all_num      = 4;
-    config.block_num          = 10;
-    config.seq_size_per_block = 4;
-    config.linear_step        = 2;
-    config.group_layer_num    = 2;
+    config.dtype                     = rtp_llm::DataType::TYPE_FP16;
+    config.layer_num                 = 4;
+    config.layer_all_num             = 4;
+    config.block_num                 = 10;
+    config.seq_size_per_block        = 4;
+    config.kernel_seq_size_per_block = 2;
+    config.linear_step               = 2;
+    config.group_layer_num           = 2;
 
     // Linear spec (small but valid).
     auto linear_spec                = std::make_shared<LinearKVCacheSpec>();
@@ -384,9 +385,10 @@ TEST_F(HybridTypeKVCacheAllocatorTest, IncrDecrKVCacheRefReferencesOnlyMatchedVa
     resource.initGroups(/*group_nums=*/2,
                         /*layer_num=*/static_cast<int>(config.layer_all_num),
                         /*layer_to_group_id=*/config.layer_to_group_id);
-    resource.cacheKeys()       = CacheKeysType{100, 101, 102};
-    resource.blocks(/*gid=*/0) = BlockIndicesType{blocks[0], 0, blocks[1]};  // linear group (contains a 0)
-    resource.blocks(/*gid=*/1) = BlockIndicesType{blocks[2], blocks[3], 0};  // full group (contains a 0)
+    resource.cacheKeys() = CacheKeysType{100, 101, 102};
+    resource.mutableBlockIds(/*gid=*/0).assign(
+        BlockIndicesType{blocks[0], 0, blocks[1]});  // linear group (contains a 0)
+    resource.mutableBlockIds(/*gid=*/1).assign(BlockIndicesType{blocks[2], blocks[3], 0});  // full group (contains a 0)
 
     // keys: 101(pos1)->gid0:0(ignore), gid1:blocks[3](ref); 102(pos2)->gid0:blocks[1](ref), gid1:0(ignore)
     auto ref = allocator->incrKVCacheRef(resource, CacheKeysType{101, 999, 102});

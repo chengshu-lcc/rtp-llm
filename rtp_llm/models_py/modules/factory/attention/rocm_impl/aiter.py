@@ -12,9 +12,10 @@ from rtp_llm.ops.compute_ops import (
     FusedRopeKVCacheDecodeOpNonAsm,
     FusedRopeKVCachePrefillOpAsm,
     FusedRopeKVCachePrefillOpNonAsm,
-    KVCache,
+    LayerKVCache,
     ParamsBase,
     PyAttentionInputs,
+    paged_attention_atrex,
 )
 
 
@@ -224,7 +225,7 @@ class AiterDecodeAttnOpBase:
         self.head_num = attn_configs.head_num
         self.head_dim = attn_configs.size_per_head
         self.head_num_kv = attn_configs.kv_head_num
-        self.tokens_per_block = attn_configs.tokens_per_block
+        self.tokens_per_block = attn_configs.kernel_tokens_per_block
         self.enable_cuda_graph = True
 
     def support(self, attn_inputs: PyAttentionInputs) -> bool:
@@ -239,43 +240,17 @@ class AiterDecodeAttnOpBase:
         )
         return fmha_params
 
-    def reshape_kv_cache(self, paged_kv_cache):
-        # attention exposes kv_cache_base as opaque int8 bytes with shape:
-        #   per-layer: [block_num, kv_block_stride_bytes]
-        # Flashinfer expects a 4D/5D paged KV cache; our non-hybrid canonical layout is:
-        #   per-layer: [block_num, 2, local_kv_head_num, tokens_per_block, head_dim]
-        block_num = paged_kv_cache.shape[0]
-        expected_elems_per_block = (
-            2 * self.head_num_kv * self.tokens_per_block * self.head_dim
-        )
-        # Hybrid stride is max(full, linear). For full-attn layers, the actual used region is a prefix.
-        # So we slice the prefix and reshape into the canonical 5D paged KV cache expected by flashinfer.
-        if paged_kv_cache.shape[1] < expected_elems_per_block:
-            raise ValueError(
-                f"packed kv_cache_base has insufficient stride: "
-                f"got stride={paged_kv_cache.shape[1]} elems, need={expected_elems_per_block} elems"
-            )
-        paged_kv_cache = paged_kv_cache[:, :expected_elems_per_block].reshape(
-            block_num,
-            2,
-            self.head_num_kv,
-            self.tokens_per_block,
-            self.head_dim,
-        )
-        return paged_kv_cache
-
 
 class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
     """Aiter decode attention operation using ASM paged attention."""
 
     def forward(
-        self, query: torch.Tensor, kv_cache: Optional[KVCache], fmha_params
+        self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
     ) -> torch.Tensor:
         seq_lens = fmha_params.seq_lens
 
-        paged_kv_cache = self.reshape_kv_cache(kv_cache.kv_cache_base)
-        key_cache = paged_kv_cache.select(1, 0)
-        value_cache = paged_kv_cache.select(1, 1)
+        key_cache = kv_cache.kv_cache_base.select(1, 0)
+        value_cache = kv_cache.kv_cache_base.select(1, 1)
         block_tables_id_device = fmha_params.kv_cache_block_id_device
         max_num_blocks = block_tables_id_device.shape[1]
         K_QScale = None
@@ -309,90 +284,131 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
     """Aiter decode attention operation using non-ASM paged attention."""
 
     def forward(
-        self, query: torch.Tensor, kv_cache: Optional[KVCache], fmha_params
+        self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
     ) -> torch.Tensor:
         seq_lens = fmha_params.seq_lens
-        paged_kv_cache = self.reshape_kv_cache(kv_cache.kv_cache_base)
-        key_cache = paged_kv_cache.select(1, 0)
-        value_cache = paged_kv_cache.select(1, 1)
+        key_cache = kv_cache.kv_cache_base.select(1, 0)
+        value_cache = kv_cache.kv_cache_base.select(1, 1)
 
-        key_scale = None
-        value_scale = None
+        K_QScale = None
+        V_QScale = None
+        using_fp8_kvcache = False
         if (
             key_cache.dtype == torch.float8_e4m3fnuz
             and value_cache.dtype == torch.float8_e4m3fnuz
         ):
-            key_scale = kv_cache.kv_scale_base.select(1, 0)
-            value_scale = kv_cache.kv_scale_base.select(1, 0)
+            K_QScale = kv_cache.kv_scale_base.select(1, 0)
+            V_QScale = kv_cache.kv_scale_base.select(1, 1)
+            using_fp8_kvcache = True
 
         block_tables_id_device = fmha_params.kv_cache_block_id_device
 
         max_seq_len = fmha_params.max_seq_len
         scale = 1.0 / (self.head_dim**0.5)
         alibi_slopes = None
-        k_scale = (
-            key_scale
-            if kv_cache and key_scale is not None
-            else torch.tensor(1.0, device=query.device, dtype=query.dtype)
-        )
-        v_scale = (
-            value_scale
-            if kv_cache and value_scale is not None
-            else torch.tensor(1.0, device=query.device, dtype=query.dtype)
-        )
         num_kv_heads = self.head_num_kv
         num_seqs, num_heads, head_size = query.shape
         block_size = value_cache.shape[2]
-        _PARTITION_SIZE_ROCM = 256
+        if max_seq_len <= 16384 and (not using_fp8_kvcache):
+            _PARTITION_SIZE_ROCM = 512
+            max_num_partitions = (
+                max_seq_len + _PARTITION_SIZE_ROCM - 1
+            ) // _PARTITION_SIZE_ROCM
+            x = 16 // key_cache.element_size()
+            grp_size = num_heads // num_kv_heads
+            kv_sizes = value_cache.shape
+            # init output
+            output = torch.empty_like(query).view((num_seqs, num_heads, head_size))
+            exp_sums = torch.empty(
+                size=(num_seqs, num_kv_heads, max_num_partitions, grp_size),
+                dtype=torch.float32,
+                device=output.device,
+            )
+            max_logits = torch.empty_like(exp_sums)
+            # init tmp_output
+            tmp_output = torch.empty(
+                size=(num_seqs, num_kv_heads, max_num_partitions, grp_size, head_size),
+                dtype=output.dtype,
+                device=output.device,
+            )
+            query = query.view((num_seqs, num_heads, head_size))
+            key_cache = key_cache.view(
+                (kv_sizes[0], kv_sizes[1], kv_sizes[3] // x, kv_sizes[2], x)
+            )
+            value_cache = value_cache.view(
+                (kv_sizes[0], kv_sizes[1], kv_sizes[3], kv_sizes[2])
+            )
+            paged_attention_atrex(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                seq_lens,
+                block_tables_id_device,
+                scale,
+                max_seq_len,
+                alibi_slopes,
+            )
+        else:
+            _PARTITION_SIZE_ROCM = 256
 
-        # init output
-        output = torch.empty_like(query)
+            max_num_partitions = (
+                max_seq_len + _PARTITION_SIZE_ROCM - 1
+            ) // _PARTITION_SIZE_ROCM
+            assert _PARTITION_SIZE_ROCM % block_size == 0
+            # init tmp_output
+            tmp_output = torch.empty(
+                size=(num_seqs, num_heads, max_num_partitions, head_size),
+                dtype=output.dtype,
+                device=output.device,
+            )
 
-        max_num_partitions = (
-            max_seq_len + _PARTITION_SIZE_ROCM - 1
-        ) // _PARTITION_SIZE_ROCM
-        assert _PARTITION_SIZE_ROCM % block_size == 0
-        # init tmp_output
-        tmp_output = torch.empty(
-            size=(num_seqs, num_heads, max_num_partitions, head_size),
-            dtype=output.dtype,
-            device=output.device,
-        )
+            # init exp_sums
+            exp_sums = torch.empty(
+                size=(num_seqs, num_heads, max_num_partitions),
+                dtype=torch.float32,
+                device=output.device,
+            )
+            fp8_out_scale = None
+            cpa_fp8_out = False
+            # init max_logits
+            max_logits = torch.ones_like(exp_sums)
 
-        # init exp_sums
-        exp_sums = torch.empty(
-            size=(num_seqs, num_heads, max_num_partitions),
-            dtype=torch.float32,
-            device=output.device,
-        )
-        fp8_out_scale = None
-        cpa_fp8_out = False
-        # init max_logits
-        max_logits = torch.ones_like(exp_sums)
-
-        kv_cache_dtype = "auto"
-
-        aiter.paged_attention_rocm(
-            output,
-            exp_sums,
-            max_logits,
-            tmp_output,
-            query,
-            key_cache,
-            value_cache,
-            num_kv_heads,
-            float(scale),
-            block_tables_id_device,
-            seq_lens,
-            block_size,
-            max_seq_len,
-            alibi_slopes,
-            kv_cache_dtype,  # kv_cache_dtype
-            k_scale,
-            v_scale,
-            fp8_out_scale if cpa_fp8_out else None,
-            _PARTITION_SIZE_ROCM,
-        )
+            kv_cache_dtype = "auto"
+            k_scale = (
+                K_QScale
+                if kv_cache and K_QScale is not None
+                else torch.tensor(1.0, device=query.device, dtype=query.dtype)
+            )
+            v_scale = (
+                V_QScale
+                if kv_cache and V_QScale is not None
+                else torch.tensor(1.0, device=query.device, dtype=query.dtype)
+            )
+            aiter.paged_attention_rocm(
+                output,
+                exp_sums,
+                max_logits,
+                tmp_output,
+                query,
+                key_cache,
+                value_cache,
+                num_kv_heads,
+                float(scale),
+                block_tables_id_device,
+                seq_lens,
+                block_size,
+                max_seq_len,
+                alibi_slopes,
+                kv_cache_dtype,  # kv_cache_dtype
+                k_scale,
+                v_scale,
+                fp8_out_scale if cpa_fp8_out else None,
+                _PARTITION_SIZE_ROCM,
+            )
 
         output_reshaped = output.view(output.shape[0], -1)
         return output_reshaped
@@ -429,7 +445,7 @@ class AiterPrefillImplAsm(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
@@ -477,7 +493,7 @@ class AiterPrefillImplNonAsm(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
@@ -523,7 +539,7 @@ class AiterDecodeImplAsm(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
@@ -582,7 +598,7 @@ class AiterDecodeImplNonAsm(FMHAImplBase):
     def forward(
         self,
         qkv: torch.Tensor,
-        kv_cache: Optional[KVCache],
+        kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
