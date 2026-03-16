@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 
 from rtp_llm.utils.util import check_with_info
+from rtp_llm.utils.scaffold import SCAFFOLD_QWEN35_MI355X
 
 
 def get_pad_size(size: int, align_size: int) -> int:
@@ -448,8 +449,22 @@ def get_sp_tensor(
         t = t.unsqueeze(0)
     qs = sp_neg1(t[:, :q_hidden], tp, tp_rank)
     if head_num_kv == 1:
-        ks = t[:, q_hidden: q_hidden + kv_hidden]
-        vs = t[:, q_hidden + kv_hidden:]
+        ks = t[:, q_hidden : q_hidden + kv_hidden]
+        vs = t[:, q_hidden + kv_hidden :]
+
+    if SCAFFOLD_QWEN35_MI355X:
+        kv_head_dim = kv_hidden // 2
+        k1 = t[:, q_hidden + 0*kv_head_dim: q_hidden + 1*kv_head_dim]
+        k2 = t[:, q_hidden + 1*kv_head_dim: q_hidden + 2*kv_head_dim]
+        v1 = t[:, q_hidden + 2*kv_head_dim: q_hidden + 3*kv_head_dim]
+        v2 = t[:, q_hidden + 3*kv_head_dim: q_hidden + 4*kv_head_dim]
+        
+        if tp_rank / tp == 0:
+            ks = torch.cat([k1, k1], dim=-1)
+            vs = torch.cat([v1, v1], dim=-1)
+        else:
+            ks = torch.cat([k2, k2], dim=-1)
+            vs = torch.cat([v2, v2], dim=-1)
     else:
         ks = sp_neg1(t[:, q_hidden: q_hidden + kv_hidden], tp, tp_rank)
         vs = sp_neg1(t[:, q_hidden + kv_hidden:], tp, tp_rank)
