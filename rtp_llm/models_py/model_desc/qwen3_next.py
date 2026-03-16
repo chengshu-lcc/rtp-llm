@@ -64,6 +64,8 @@ _DUMP_DIR = os.environ.get("QWEN3_NEXT_DUMP_DIR", "")
 _DUMP_ENABLED = bool(_DUMP_DIR)
 _DUMP_STEP_COUNTER = 0
 _DUMP_RANK: Optional[int] = None
+_DUMP_WEIGHTS_DONE = False
+_IS_PREFILL_GDN = False
 
 
 def _get_dump_rank() -> int:
@@ -83,14 +85,14 @@ def _get_dump_rank() -> int:
     return rank
 
 
-def _dump_tensor(tensor: torch.Tensor, name: str):
-    """Save a tensor to disk for precision debugging.
+def _set_prefill_gdn(is_prefill: bool):
+    """Set the global prefill GDN flag for activation logging."""
+    global _IS_PREFILL_GDN
+    _IS_PREFILL_GDN = is_prefill
 
-    Tensors are saved as .pt files under _DUMP_DIR/rank_R/step_S/.
-    When TP > 1, each rank writes to its own rank_R/ sub-directory to
-    avoid file conflicts. All dump points are placed after all_reduce,
-    so rank_0's data is sufficient for comparison with HuggingFace.
-    """
+
+def _dump_tensor(tensor: torch.Tensor, name: str):
+
     if not _DUMP_ENABLED:
         return
     rank = _get_dump_rank()
@@ -103,8 +105,38 @@ def _dump_tensor(tensor: torch.Tensor, name: str):
 def _increment_dump_step():
     """Advance the global dump step counter (call once per forward pass)."""
     global _DUMP_STEP_COUNTER
-    if _DUMP_ENABLED:
-        _DUMP_STEP_COUNTER += 1
+    # if _DUMP_ENABLED:
+    _DUMP_STEP_COUNTER += 1
+
+
+def _dump_weights_once(weights_dict: Dict[str, torch.Tensor], prefix: str):
+    """Dump all weight tensors once (at first forward pass) for cross-framework comparison.
+
+    Weights are saved under _DUMP_DIR/rank_R/weights/ to separate them from
+    per-step activation dumps.
+    """
+    global _DUMP_WEIGHTS_DONE
+    if not _DUMP_ENABLED or _DUMP_WEIGHTS_DONE:
+        return
+    _DUMP_WEIGHTS_DONE = True
+    rank = _get_dump_rank()
+    weight_dir = os.path.join(_DUMP_DIR, f"rank_{rank}", "weights")
+    os.makedirs(weight_dir, exist_ok=True)
+    for name, tensor in weights_dict.items():
+        safe_name = name.replace("/", "_").replace(".", "_")
+        file_path = os.path.join(weight_dir, f"{prefix}_{safe_name}.pt")
+        torch.save(tensor.detach().cpu(), file_path)
+
+
+def _dump_config_once(config_dict: Dict[str, Any], prefix: str):
+    """Dump model configuration parameters once for cross-framework comparison."""
+    if not _DUMP_ENABLED:
+        return
+    rank = _get_dump_rank()
+    config_dir = os.path.join(_DUMP_DIR, f"rank_{rank}", "config")
+    os.makedirs(config_dir, exist_ok=True)
+    file_path = os.path.join(config_dir, f"{prefix}_config.pt")
+    torch.save(config_dict, file_path)
 
 
 def _is_target_verify(attention_inputs: PyAttentionInputs) -> bool:
@@ -143,11 +175,13 @@ class Qwen3NextGatedDeltaNetBase(torch.nn.Module):
         linear_attn_config: LinearAttentionConfig,
         parallelism_config: ParallelismConfig,
         weights: Dict[str, torch.Tensor],
+        layer_idx: int = -1,
     ):
         super().__init__()
         self.linear_attn_config = linear_attn_config
         self.parallelism_config = parallelism_config
         self.weights = weights
+        self.layer_idx = layer_idx
         # params
         self.head_k_dim: int = linear_attn_config.linear_key_head_dim
         self.head_v_dim: int = linear_attn_config.linear_value_head_dim
@@ -232,8 +266,9 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         linear_attn_config: LinearAttentionConfig,
         parallelism_config: ParallelismConfig,
         weights: Dict[str, torch.Tensor],
+        layer_idx: int = -1,
     ):
-        super().__init__(linear_attn_config, parallelism_config, weights)
+        super().__init__(linear_attn_config, parallelism_config, weights, layer_idx)
 
     def _conv1d(
         self,
@@ -274,7 +309,14 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         seq_size_per_block: int,
         attn_inputs: PyAttentionInputs,
     ) -> torch.Tensor:
+        lp = f"layer_{self.layer_idx}_gdn"
+        _dump_tensor(self.alog, f"{lp}_prefill_fla_alog")
+        _dump_tensor(self.dt_bias, f"{lp}_prefill_fla_dt_bias")
+        _dump_tensor(a, f"{lp}_prefill_fla_a_input")
+        _dump_tensor(b, f"{lp}_prefill_fla_b_input")
         g, beta = fused_gdn_gating(self.alog, a, b, self.dt_bias)
+        _dump_tensor(g, f"{lp}_prefill_fla_g")
+        _dump_tensor(beta, f"{lp}_prefill_fla_beta")
         ssm_states = (
             self._get_ssm_states(kv_cache_tensor)
             if kv_cache_tensor is not None
@@ -283,6 +325,8 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         context_batch_size = attn_inputs.input_lengths.shape[0]
         # cu_seqlens_without_padding = attn_inputs.cu_seqlens[: context_batch_size + 1]
         cu_seqlens_without_padding = attn_inputs.cu_seqlens
+        lp = f"layer_{self.layer_idx}_gdn"
+        _dump_tensor(cu_seqlens_without_padding, f"{lp}_prefill_fla_cu_seqlens")
         initial_states: Optional[torch.Tensor] = None
         if ssm_states is not None:
             initial_states = torch.empty(
@@ -310,9 +354,16 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
             ],
             dim=-1,
         )
+        lp = f"layer_{self.layer_idx}_gdn"
+        _dump_tensor(query, f"{lp}_prefill_fla_query_before_view")
+        _dump_tensor(key, f"{lp}_prefill_fla_key_before_view")
+        _dump_tensor(value, f"{lp}_prefill_fla_value_before_view")
         query = query.view(1, query.shape[0], self.local_num_k_heads, self.head_k_dim)
         key = key.view(1, key.shape[0], self.local_num_k_heads, self.head_k_dim)
         value = value.view(1, value.shape[0], self.local_num_v_heads, self.head_v_dim)
+        _dump_tensor(query, f"{lp}_prefill_fla_query")
+        _dump_tensor(key, f"{lp}_prefill_fla_key")
+        _dump_tensor(value, f"{lp}_prefill_fla_value")
         attn_out, h, final_state = chunk_gated_delta_rule(
             query,
             key,
@@ -353,6 +404,8 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
                 kv_cache.kv_cache_base.shape[0], -1
             )
             seq_size_per_block = kv_cache.seq_size_per_block
+        lp = f"layer_{self.layer_idx}_gdn"
+        _dump_tensor(mixed_qkv, f"{lp}_prefill_conv1d_input")
         mixed_qkv = self._conv1d(
             mixed_qkv,
             kv_cache_tensor,
@@ -360,9 +413,11 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
             attn_inputs,
             metadata=attn_meta.get_prefill_conv1d_meta(),
         )
+        _dump_tensor(mixed_qkv, f"{lp}_prefill_conv1d_output")
         attn_out = self._fla(
             mixed_qkv, b, a, kv_cache_tensor, seq_size_per_block, attn_inputs
         )
+        _dump_tensor(attn_out, f"{lp}_prefill_fla_output")
         if kv_cache is not None:
             # write kvcache to cache store
             compute_ops.write_cache_store(
@@ -376,6 +431,15 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
 
 
 class Qwen3NextGatedDeltaNetDecode(Qwen3NextGatedDeltaNetBase):
+    def __init__(
+        self,
+        linear_attn_config: LinearAttentionConfig,
+        parallelism_config: ParallelismConfig,
+        weights: Dict[str, torch.Tensor],
+        layer_idx: int = -1,
+    ):
+        super().__init__(linear_attn_config, parallelism_config, weights, layer_idx)
+
     def _conv1d(
         self,
         mixed_qkv: torch.Tensor,
@@ -554,12 +618,14 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         weights: Dict[str, torch.Tensor],
         layernorm_eps: float,
         quant_config: Optional[object] = None,
+        layer_idx: int = -1,
     ):
         super().__init__()
         self.linear_attn_config = linear_attn_config
         self.parallelism_config = parallelism_config
         self.weights = weights
         self.quant_config = quant_config
+        self.layer_idx = layer_idx
         # in_proj_qkvz is bf16 / fp8
         self.in_proj_qkvz = LinearFactory.create_linear_from_weights(
             weights, W.linear_attn_qkvz_w, W.linear_attn_qkvz_s, None, quant_config
@@ -579,10 +645,10 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         self.num_key_value_heads = self.local_num_v_heads // self.local_num_k_heads
 
         self.prefill_gdn = Qwen3NextGatedDeltaNetPrefill(
-            linear_attn_config, parallelism_config, weights
+            linear_attn_config, parallelism_config, weights, layer_idx
         )
         self.decode_gdn = Qwen3NextGatedDeltaNetDecode(
-            linear_attn_config, parallelism_config, weights
+            linear_attn_config, parallelism_config, weights, layer_idx
         )
         self.norm = RmsNormGated(
             weights[W.linear_attn_norm_w],
@@ -593,7 +659,20 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             weights, W.linear_attn_out_w, W.linear_attn_out_s, None, quant_config
         )
 
-    # mixed_qkvz, mixed_ba -> q, k, v, z, b, a
+        # Dump config parameters once
+        _dump_config_once(
+            {
+                "head_k_dim": self.head_k_dim,
+                "head_v_dim": self.head_v_dim,
+                "local_num_k_heads": self.local_num_k_heads,
+                "local_num_v_heads": self.local_num_v_heads,
+                "num_key_value_heads": self.num_key_value_heads,
+                "linear_conv_kernel_dim": linear_attn_config.linear_conv_kernel_dim,
+                "tp_size": parallelism_config.tp_size,
+            },
+            prefix="gdn",
+        )
+
     def fix_query_key_value_ordering(
         self, mixed_qkvz: torch.Tensor, mixed_ba: torch.Tensor
     ) -> tuple[
@@ -624,17 +703,41 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         kv_cache: Optional[LayerKVCache],
         attention_inputs: Optional[PyAttentionInputs],
         attn_meta: Qwen3NextMetadata,
+        layer_idx: int = -1,
     ) -> torch.Tensor:
         assert attention_inputs is not None, "attention_inputs is required"
         assert (
             not attention_inputs.is_prefill
             or attn_meta.get_prefill_conv1d_meta() is not None
         ), "prefill_conv1d_meta is required for prefill"
+        _set_prefill_gdn(attention_inputs.is_prefill)
+        lp = f"layer_{layer_idx}_gdn"
         projected_states_qkvz = self.in_proj_qkvz(hidden_states)
+        # tttt = projected_states_qkvz.detach().float()
+        # logging.info(
+        #     f"[projected_states_qkvz_{_DUMP_STEP_COUNTER}_layer{layer_idx}] {tttt}: shape={list(tttt.shape)}, dtype={tttt.dtype}, "
+        #     f"min={tttt.min().item():.6f}, max={tttt.max().item():.6f}, "
+        #     f"mean={tttt.mean().item():.6f}, std={tttt.std().item():.6f}"
+        # )
+
         projected_states_ba = self.in_proj_ba(hidden_states)
+        _dump_tensor(projected_states_qkvz, f"{lp}_proj_qkvz")
+        _dump_tensor(projected_states_ba, f"{lp}_proj_ba")
         mixed_qkv, z, b, a = self.fix_query_key_value_ordering(
             projected_states_qkvz, projected_states_ba
         )
+        # Dump individual q, k, v split from mixed_qkv for cross-framework comparison
+        _q_size = self.head_k_dim * self.local_num_k_heads
+        _k_size = self.head_k_dim * self.local_num_k_heads
+        _v_size = self.head_v_dim * self.local_num_v_heads
+        _q, _k, _v = torch.split(mixed_qkv, [_q_size, _k_size, _v_size], dim=1)
+        _dump_tensor(_q, f"{lp}_q")
+        _dump_tensor(_k, f"{lp}_k")
+        _dump_tensor(_v, f"{lp}_v")
+        _dump_tensor(mixed_qkv, f"{lp}_mixed_qkv")
+        _dump_tensor(z, f"{lp}_z")
+        _dump_tensor(b, f"{lp}_b")
+        _dump_tensor(a, f"{lp}_a")
         if attention_inputs.is_prefill and not attn_meta.is_target_verify:
             attn_output = self.prefill_gdn(
                 mixed_qkv, b, a, attention_inputs, kv_cache, attn_meta
@@ -643,14 +746,19 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             attn_output = self.decode_gdn(
                 mixed_qkv, b, a, attention_inputs, kv_cache, attn_meta
             )
+        _dump_tensor(attn_output, f"{lp}_fla_output")
         attn_output = self.norm(
             attn_output.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim)
         )
+        _dump_tensor(attn_output, f"{lp}_norm_output")
         # from [token * head, dim] -> [token, head * dim]
         attn_output = attn_output.reshape(-1, self.local_num_v_heads * self.head_v_dim)
         attn_output = self.out_proj(attn_output)
+        _dump_tensor(attn_output, f"{lp}_out_proj_output")
         if self.parallelism_config.get_attn_tp_size() > 1:
             attn_output = all_reduce(attn_output, group=Group.TP)
+        _dump_tensor(attn_output, f"{lp}_final_output")
+        _set_prefill_gdn(False)
         return attn_output
 
 
@@ -725,13 +833,16 @@ class Qwen3NextDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
-        hidden_states = self.self_attn(
+        attn_kwargs = dict(
             hidden_states=hidden_states,
             fmha_impl=fmha_impl,
             kv_cache=kv_cache,
             attention_inputs=attention_inputs,
             attn_meta=attn_meta,
         )
+        if isinstance(self.self_attn, Qwen3NextGatedDeltaNet):
+            attn_kwargs["layer_idx"] = self.layer_idx
+        hidden_states = self.self_attn(**attn_kwargs)
         hidden_states = residual + hidden_states
         _dump_tensor(hidden_states, f"{layer_prefix}_after_attn")
 
