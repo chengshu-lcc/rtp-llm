@@ -1835,9 +1835,7 @@ void tpSyncModelInputs(GptModelInputs& inputs, rtp_llm::DeviceBase* device) {
     shape_hints_ptr[GptModelInputIndex::maxKernelBlocksPerBatch] =
         inputs.kv_cache_kernel_block_id.get() ? inputs.kv_cache_kernel_block_id->shape()[2] : 0;
     shape_hints_ptr[GptModelInputIndex::maxBlocksPerBatch] =
-        inputs.kv_cache_block_id.get() ?
-            inputs.kv_cache_block_id->shape()[2] :
-            (inputs.kv_cache_kernel_block_id.get() ? inputs.kv_cache_kernel_block_id->shape()[2] : 0);
+        inputs.kv_cache_block_id.get() ? inputs.kv_cache_block_id->shape()[2] : 0;
     shape_hints_ptr[GptModelInputIndex::kvCacheGroupNum] =
         inputs.kv_cache_kernel_block_id.get() ?
             inputs.kv_cache_kernel_block_id->shape()[0] :
@@ -2025,7 +2023,7 @@ void tpSyncModelInputs(GptModelInputs& inputs, rtp_llm::DeviceBase* device) {
     buffers.emplace_back(inputs.input_lengths);
     buffers.emplace_back(inputs.sequence_lengths);
     buffers.emplace_back(inputs.prefix_lengths);
-    if (max_kernel_blocks) {
+    if (max_kernel_blocks && max_blocks) {
         buffers.emplace_back(inputs.kv_cache_kernel_block_id);
         buffers.emplace_back(inputs.kv_cache_block_id);
         if (inputs.kv_cache_layer_to_group) {

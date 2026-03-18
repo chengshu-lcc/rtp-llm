@@ -14,6 +14,12 @@ namespace rtp_llm {
 using CacheKeyType = int64_t;
 using BlockIdxType = int32_t;
 
+constexpr BlockIdxType NULL_BLOCK_IDX = static_cast<BlockIdxType>(-1);
+
+inline bool isNullBlockIdx(BlockIdxType block_idx) {
+    return block_idx == NULL_BLOCK_IDX;
+}
+
 using CacheKeysType    = std::vector<CacheKeyType>;
 using BlockIndicesType = std::vector<BlockIdxType>;
 
@@ -46,10 +52,6 @@ public:
     void setAt(size_t pos, BlockIdxType val);
 
     void resize(size_t new_size, BlockIdxType value = 0);
-
-    void swap(size_t rhs, size_t lhs) {
-        std::swap(block_indices[rhs], block_indices[lhs]);
-    }
 
 private:
     // Update the kernel slots that correspond to physical block position `pos`.
