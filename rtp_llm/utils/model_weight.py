@@ -5,8 +5,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import torch
 
-from rtp_llm.utils.util import check_with_info
 from rtp_llm.utils.scaffold import SCAFFOLD_QWEN35_MI355X
+from rtp_llm.utils.util import check_with_info
 
 
 def get_pad_size(size: int, align_size: int) -> int:
@@ -273,7 +273,7 @@ def sp_neg1_part_by_head(
     t_0 = torch.split(
         t[:, : head_num * size_per_head], head_num * size_per_head // tp, dim=-1
     )[tp_rank]
-    t_1 = t[:, head_num * size_per_head:]
+    t_1 = t[:, head_num * size_per_head :]
     return torch.concat([t_0, t_1], dim=-1)
 
 
@@ -373,7 +373,7 @@ def stack_moe_w1_pad(ts: List[torch.Tensor], moe_align_size: int, dim: int):
         dim: Dimension to pad (1 after stacking)
     """
     gate_ = ts[: len(ts) // 2]
-    up_ = ts[len(ts) // 2:]
+    up_ = ts[len(ts) // 2 :]
     w1 = torch.stack(gate_, dim=0)
     w3 = torch.stack(up_, dim=0)
 
@@ -415,7 +415,7 @@ def stack_0(ts: List[torch.Tensor]) -> torch.Tensor:
 
 def stack_moe_w1(ts: List[torch.Tensor]):
     gate = ts[: len(ts) // 2]
-    up = ts[len(ts) // 2:]
+    up = ts[len(ts) // 2 :]
     ws = []
     for w1, w3 in zip(gate, up):
         ws.append(concat_0([w1, w3]))
@@ -425,7 +425,7 @@ def stack_moe_w1(ts: List[torch.Tensor]):
 
 def stack_moe_w1_s2(ts: List[torch.Tensor]):
     gate = ts[: len(ts) // 2]
-    up = ts[len(ts) // 2:]
+    up = ts[len(ts) // 2 :]
     ws = []
     for w1, w3 in zip(gate, up):
         ws.append(max_scalar([w1, w3]))
@@ -456,15 +456,27 @@ def get_sp_tensor(
         kv_head_dim = kv_hidden // head_num_kv
         heads_per_kv = tp // head_num_kv
         kv_head_idx = tp_rank // heads_per_kv
-        ks = t[:, q_hidden + kv_head_idx * kv_head_dim : q_hidden + (kv_head_idx + 1) * kv_head_dim]
-        vs = t[:, q_hidden + kv_hidden + kv_head_idx * kv_head_dim : q_hidden + kv_hidden + (kv_head_idx + 1) * kv_head_dim]
+        ks = t[
+            :,
+            q_hidden
+            + kv_head_idx * kv_head_dim : q_hidden
+            + (kv_head_idx + 1) * kv_head_dim,
+        ]
+        vs = t[
+            :,
+            q_hidden
+            + kv_hidden
+            + kv_head_idx * kv_head_dim : q_hidden
+            + kv_hidden
+            + (kv_head_idx + 1) * kv_head_dim,
+        ]
         # duplicate to fill expected kv_hidden size
         dup_factor = head_num_kv
         ks = torch.cat([ks] * dup_factor, dim=-1)
         vs = torch.cat([vs] * dup_factor, dim=-1)
     else:
-        ks = sp_neg1(t[:, q_hidden: q_hidden + kv_hidden], tp, tp_rank)
-        vs = sp_neg1(t[:, q_hidden + kv_hidden:], tp, tp_rank)
+        ks = sp_neg1(t[:, q_hidden : q_hidden + kv_hidden], tp, tp_rank)
+        vs = sp_neg1(t[:, q_hidden + kv_hidden :], tp, tp_rank)
     return torch.concat([qs, ks, vs], dim=1).contiguous()
 
 
@@ -556,11 +568,32 @@ def get_sp_tensor_blocked(
         t = t.unsqueeze(0)
     qs = sp_neg1(t[:, :q_hidden], tp, tp_rank)
     if head_num_kv == 1:
-        ks = t[:, q_hidden: q_hidden + kv_hidden]
-        vs = t[:, q_hidden + kv_hidden:]
+        ks = t[:, q_hidden : q_hidden + kv_hidden]
+        vs = t[:, q_hidden + kv_hidden :]
+    elif SCAFFOLD_QWEN35_MI355X.duplicated_kv_head:
+        kv_head_dim = kv_hidden // head_num_kv
+        heads_per_kv = tp // head_num_kv
+        kv_head_idx = tp_rank // heads_per_kv
+        ks = t[
+            :,
+            q_hidden
+            + kv_head_idx * kv_head_dim : q_hidden
+            + (kv_head_idx + 1) * kv_head_dim,
+        ]
+        vs = t[
+            :,
+            q_hidden
+            + kv_hidden
+            + kv_head_idx * kv_head_dim : q_hidden
+            + kv_hidden
+            + (kv_head_idx + 1) * kv_head_dim,
+        ]
+        dup_factor = head_num_kv
+        ks = torch.cat([ks] * dup_factor, dim=-1)
+        vs = torch.cat([vs] * dup_factor, dim=-1)
     else:
-        ks = sp_neg1(t[:, q_hidden: q_hidden + kv_hidden], tp, tp_rank)
-        vs = sp_neg1(t[:, q_hidden + kv_hidden:], tp, tp_rank)
+        ks = sp_neg1(t[:, q_hidden : q_hidden + kv_hidden], tp, tp_rank)
+        vs = sp_neg1(t[:, q_hidden + kv_hidden :], tp, tp_rank)
     return torch.concat([qs, ks, vs], dim=1).contiguous()
 
 
@@ -596,7 +629,7 @@ def sp_attn_gate(
     local_head_num = head_num // tp
     start_idx = local_head_num * tp_rank
     end_idx = local_head_num * (tp_rank + 1)
-    t = t[:, start_idx * size_per_head: end_idx * size_per_head]
+    t = t[:, start_idx * size_per_head : end_idx * size_per_head]
     return t
 
 
@@ -667,7 +700,7 @@ def sp_0_pad8(t: torch.Tensor, tp: int, tp_rank: int, **kwargs: Any) -> torch.Te
         if len(t.shape) == 2:
             return torch.concat(
                 [
-                    t[tp_rank * per_slice_size:, :],
+                    t[tp_rank * per_slice_size :, :],
                     torch.zeros([pad_size, t.shape[1]], device=t.device).to(t.dtype),
                 ],
                 dim=0,
@@ -675,16 +708,16 @@ def sp_0_pad8(t: torch.Tensor, tp: int, tp_rank: int, **kwargs: Any) -> torch.Te
         else:
             return torch.concat(
                 [
-                    t[tp_rank * per_slice_size:, :],
+                    t[tp_rank * per_slice_size :, :],
                     torch.zeros([pad_size], device=t.device).to(t.dtype),
                 ],
                 dim=0,
             )
     else:
         if len(t.shape) == 2:
-            return t[tp_rank * per_slice_size: (tp_rank + 1) * per_slice_size, :]
+            return t[tp_rank * per_slice_size : (tp_rank + 1) * per_slice_size, :]
         else:
-            return t[tp_rank * per_slice_size: (tp_rank + 1) * per_slice_size]
+            return t[tp_rank * per_slice_size : (tp_rank + 1) * per_slice_size]
 
 
 def merge_qkv_hf(ts: List[torch.Tensor]):
@@ -1060,7 +1093,7 @@ def sp_0_w13(
 def split_slopes_tp(slopes: torch.Tensor, head_num: int, tp: int, tp_rank: int):
     local_head_num = 1 if head_num == 1 else head_num // tp
     start_pos = local_head_num * tp_rank
-    return slopes[start_pos: start_pos + local_head_num]
+    return slopes[start_pos : start_pos + local_head_num]
 
 
 def get_slopes(n: int) -> List[float]:

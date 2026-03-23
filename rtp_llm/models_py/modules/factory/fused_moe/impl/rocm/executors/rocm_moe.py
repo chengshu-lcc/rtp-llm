@@ -18,7 +18,6 @@ from rtp_llm.models_py.modules.factory.fused_moe.defs.type import ExecutorType
 from rtp_llm.models_py.modules.factory.fused_moe.utils.config_resolver import (
     MoeConfigResolver,
 )
-
 from rtp_llm.utils.model_weight import W
 
 BLOCK_SIZE_M = 32
@@ -105,6 +104,7 @@ class RocmExpertsBf16(FusedMoeExpertExecutor):
         )
 
         from aiter.fused_moe import fused_moe
+
         output = fused_moe(
             hidden_states,
             self.w1,
@@ -189,7 +189,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
         assert payload.expert_tokens_meta is not None
 
         global_E = self.num_experts
-        E = global_E
+        E = self.local_num_experts
         N = self.w1.size(1)
         assert payload.expert_topk_ids is not None
 
@@ -303,9 +303,7 @@ class RocmExpertsFp8PerBlock(FusedMoeExpertExecutor):
 
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
-        checker.check(
-            quant_method in ("FP8_PER_BLOCK")
-        )
+        checker.check(quant_method in ("FP8_PER_BLOCK"))
 
     @property
     def topk_ids_dtype(self) -> torch.dtype:
@@ -362,7 +360,9 @@ class RocmExpertsFp8PerBlock(FusedMoeExpertExecutor):
         topk_weights = payload.expert_topk_weights
         assert topk_ids is not None
 
-        print(f"moe per block self.w1.size(0)={self.w1.size(0)}, self.num_experts={self.num_experts}")
+        print(
+            f"moe per block self.w1.size(0)={self.w1.size(0)}, self.num_experts={self.num_experts}"
+        )
         # assert self.w1.size(0) == self.num_experts
         # assert self.w2.size(0) == self.num_experts
 
@@ -384,8 +384,9 @@ class RocmExpertsFp8PerBlock(FusedMoeExpertExecutor):
             if activation == "silu" or activation == "SiGLU"
             else aiter.ActivationType.Gelu
         )
-        
+
         from aiter.fused_moe import fused_moe
+
         output = fused_moe(
             hidden_states,
             self.w1,
