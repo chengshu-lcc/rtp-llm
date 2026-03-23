@@ -115,12 +115,14 @@ try:
             PyFlashinferDecodeImpl,
             PyFlashinferPrefillImpl,
         )
+
         PREFILL_MHA_IMPS.append(PyFlashinferPrefillImpl)
         DECODE_MHA_IMPS.append(PyFlashinferDecodeImpl)
-        
+
         from rtp_llm.models_py.modules.factory.attention.cuda_cp_impl.prefill_cp_flashinfer import (
             CPFlashInferImpl,
         )
+
         PREFILL_MHA_IMPS.append(CPFlashInferImpl)
 except Exception as e:
     logging.warning(f"Failed to import Attention implementation: {e}")

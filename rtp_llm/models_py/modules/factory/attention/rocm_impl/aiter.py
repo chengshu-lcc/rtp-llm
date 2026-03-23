@@ -945,8 +945,11 @@ class AiterDecodeImplBase(FMHAImplBase):
         self.fmha_params.fillParams(
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_block_id_host,
-            attn_inputs.kv_cache_block_id_device,
+            attn_inputs.kv_cache_kernel_block_id_host,
+            attn_inputs.kv_cache_kernel_block_id_device,
+        )
+        self.rope_params.update_kv_cache_offset(
+            attn_inputs.kv_cache_kernel_block_id_device
         )
         if attn_inputs.kv_cache_block_id_device is not None:
             update_kv_cache_offset = getattr(
