@@ -1,3 +1,4 @@
+import logging
 from abc import abstractmethod
 from typing import Any, Optional, Tuple
 
@@ -115,7 +116,9 @@ class PureTpRouterBase(FusedMoeDataRouter):
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
-            fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
+            fused_expert_output = all_reduce(
+                fused_expert_output, group=Group.TP
+            )
         return fused_expert_output
 
 
