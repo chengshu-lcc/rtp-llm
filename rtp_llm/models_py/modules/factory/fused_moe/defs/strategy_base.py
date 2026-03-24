@@ -57,7 +57,7 @@ class MoeStrategy(ABC):
         # this strategy cannot handle the configuration.
         try:
             attrs = self.get_attributes()
-        except (ImportError, ModuleNotFoundError) as import_error:
+        except ImportError as import_error:
             logger.debug(
                 f"[{self.__class__.__name__}] Skipped due to missing dependency: {import_error}"
             )

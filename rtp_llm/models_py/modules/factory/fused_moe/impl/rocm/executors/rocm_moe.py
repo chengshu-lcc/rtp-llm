@@ -1,7 +1,7 @@
 from math import prod
 from typing import Any, Callable, Dict, Optional
-import aiter 
 
+import aiter
 import torch
 
 from rtp_llm.models_py.modules.factory.fused_moe.defs.config_adapter import (

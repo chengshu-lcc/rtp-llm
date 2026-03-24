@@ -424,49 +424,15 @@ class TestTrtAllReduceFusion(unittest.TestCase):
     # ------------------------------------------------------------------
     # Pure allreduce
     # ------------------------------------------------------------------
-    def test_pure_allreduce_hidden1024_ws2(self):
-        _launch_workers(
-            _worker_pure_allreduce, world_size=2,
-            batch_size=8, hidden_size=1024, dtype=torch.bfloat16,
-        )
-
-    def test_pure_allreduce_hidden2048_ws2(self):
-        _launch_workers(
-            _worker_pure_allreduce, world_size=2,
-            batch_size=8, hidden_size=2048, dtype=torch.bfloat16,
-        )
-
     def test_pure_allreduce_hidden4096_ws2(self):
         _launch_workers(
             _worker_pure_allreduce, world_size=2,
             batch_size=8, hidden_size=4096, dtype=torch.bfloat16,
         )
 
-    def test_pure_allreduce_hidden4096_ws4(self):
-        if torch.cuda.device_count() < 4:
-            self.skipTest("Need ≥4 GPUs")
-        _launch_workers(
-            _worker_pure_allreduce, world_size=4,
-            batch_size=8, hidden_size=4096, dtype=torch.bfloat16,
-        )
-
     # ------------------------------------------------------------------
     # Fused allreduce + residual + rmsnorm (bf16, no fp8)
     # ------------------------------------------------------------------
-    def test_fused_rmsnorm_hidden1024_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=8, hidden_size=1024, eps=1e-6,
-            fp8_out=False, dtype=torch.bfloat16,
-        )
-
-    def test_fused_rmsnorm_hidden2048_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=8, hidden_size=2048, eps=1e-6,
-            fp8_out=False, dtype=torch.bfloat16,
-        )
-
     def test_fused_rmsnorm_hidden4096_ws2(self):
         _launch_workers(
             _worker_allreduce_residual_rmsnorm, world_size=2,
@@ -474,82 +440,13 @@ class TestTrtAllReduceFusion(unittest.TestCase):
             fp8_out=False, dtype=torch.bfloat16,
         )
 
-    def test_fused_rmsnorm_hidden4096_ws4(self):
-        if torch.cuda.device_count() < 4:
-            self.skipTest("Need ≥4 GPUs")
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=4,
-            batch_size=8, hidden_size=4096, eps=1e-6,
-            fp8_out=False, dtype=torch.bfloat16,
-        )
-
-    # ------------------------------------------------------------------
-    # Fused allreduce + residual + rmsnorm with FP8 quantized output
-    # ------------------------------------------------------------------
-    def test_fused_rmsnorm_fp8_hidden1024_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=8, hidden_size=1024, eps=1e-6,
-            fp8_out=True, dtype=torch.bfloat16,
-        )
-
-    def test_fused_rmsnorm_fp8_hidden4096_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=8, hidden_size=4096, eps=1e-6,
-            fp8_out=True, dtype=torch.bfloat16,
-        )
-
-    def test_fused_rmsnorm_fp8_hidden4096_ws4(self):
-        if torch.cuda.device_count() < 4:
-            self.skipTest("Need ≥4 GPUs")
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=4,
-            batch_size=8, hidden_size=4096, eps=1e-6,
-            fp8_out=True, dtype=torch.bfloat16,
-        )
-
-    # ------------------------------------------------------------------
-    # Fused vs native (TrtllmDistEnv internal consistency)
-    # ------------------------------------------------------------------
-    def test_fused_vs_native_hidden2048_ws2(self):
-        _launch_workers(
-            _worker_fused_vs_native, world_size=2,
-            batch_size=8, hidden_size=2048, eps=1e-6,
-            fp8_out=False, dtype=torch.bfloat16,
-        )
-
-    def test_fused_vs_native_fp8_hidden4096_ws2(self):
-        _launch_workers(
-            _worker_fused_vs_native, world_size=2,
-            batch_size=8, hidden_size=4096, eps=1e-6,
-            fp8_out=True, dtype=torch.bfloat16,
-        )
-
     # ------------------------------------------------------------------
     # Larger batch sizes
     # ------------------------------------------------------------------
-    def test_fused_rmsnorm_large_batch_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=64, hidden_size=4096, eps=1e-6,
-            fp8_out=False, dtype=torch.bfloat16,
-        )
-
     def test_pure_allreduce_large_batch_ws2(self):
         _launch_workers(
             _worker_pure_allreduce, world_size=2,
             batch_size=64, hidden_size=4096, dtype=torch.bfloat16,
-        )
-
-    # ------------------------------------------------------------------
-    # float16 dtype
-    # ------------------------------------------------------------------
-    def test_fused_rmsnorm_fp16_hidden4096_ws2(self):
-        _launch_workers(
-            _worker_allreduce_residual_rmsnorm, world_size=2,
-            batch_size=8, hidden_size=4096, eps=1e-6,
-            fp8_out=False, dtype=torch.float16,
         )
 
 

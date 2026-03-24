@@ -318,8 +318,7 @@ def sp_moe_w1(
         t1 = t.reshape([t.shape[0], 2, -1, t.shape[-1]])
         t2 = torch.split(t1, t1.shape[2] // tp, dim=2)[tp_rank]
         t2 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
-        t3 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
-        return t3
+        return t2
     if use_stack_weight:
         assert len(t.shape) == 3, "t.shape: " + str(t.shape)
         return t.split(t.shape[0] // ep, dim=0)[ep_rank]

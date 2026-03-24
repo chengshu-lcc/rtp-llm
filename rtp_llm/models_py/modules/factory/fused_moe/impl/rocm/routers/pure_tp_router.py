@@ -153,18 +153,3 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
         a8_scale = torch.empty((M, 1), dtype=torch.float32, device=a1.device)
         aiter.dynamic_per_token_scaled_quant(a8, a1, a8_scale)
         return a8, a8_scale
-
-    def finalize(
-        self,
-        payload: CombineForwardPayload,
-        topk_weights: torch.Tensor,
-        topk_ids: torch.Tensor,
-        apply_router_weight_on_input: bool,
-        extra_finalize_args: Optional[dict[str, Any]],
-    ) -> torch.Tensor:
-        fused_expert_output = payload.fused_expert_output
-        if self.tp_size > 1:
-            fused_expert_output = all_reduce(
-                fused_expert_output, group=Group.TP
-            )
-        return fused_expert_output

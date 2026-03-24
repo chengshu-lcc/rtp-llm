@@ -264,9 +264,6 @@ def ensure_trtllm_comm_initialized(
     device_id: int,
 ) -> bool:
     """Ensure TrtllmCommManager is initialized with the given parameters."""
-    if _trtllm_comm_manager is None:
-        return False
-
     if (
         not _trtllm_comm_manager.initialized
         or _trtllm_comm_manager.group != group

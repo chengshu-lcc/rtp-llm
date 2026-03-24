@@ -53,14 +53,14 @@ def auto_configure_deepep(
     - PD separation + Decode node + Multi-node multi-GPU (>=9 GPUs): 1, 1, 1
     """
 
-    tp_size = parallelism_config.tp_size
-    ep_size = parallelism_config.ep_size
+    # Use all_gather when there is no data parallelism (dp_size == 1),
+    # i.e., single GPU mode or pure TP mode.
+    dp_size = parallelism_config.dp_size
     moe_config.ll_num_max_token = ll_num_max_token
-    # TODO(wenhua): pure tp mode ep_size == 1
     moe_config.use_all_gather = (
         moe_config.use_all_gather
         and not deep_ep_config.use_deepep_low_latency
-        and (ep_size == tp_size or ep_size == 1)
+        and dp_size == 1
     )
     if moe_config.use_all_gather:
         moe_config.use_deepep_moe = False
@@ -206,9 +206,12 @@ def set_parallelism_config(
             n = world_size
         parallelism_config.local_world_size = max(n, 1)
 
-    # The default value of ep_size is 0, meaning EP is not explicitly configured.
-    # When ep_size == 0, fall back to the original behavior: ep_size = tp_size * dp_size.
-    # When ep_size == 1, it indicates pure TP mode, which requires tp_size > 1, dp_size == 1.
+    # Resolve and validate parallelism configuration.
+    # ep_size default is 0, which triggers automatic derivation.
+    # Three supported modes:
+    # 1. Single GPU: tp_size == 1, dp_size == 1, ep_size == 0 (default) → ep_size set to 1
+    # 2. Pure TP:    ep_size explicitly set to 1, tp_size > 1, dp_size == 1
+    # 3. EP mode:    ep_size == 0 (default), ep_size auto-derived as tp_size * dp_size
     if parallelism_config.ep_size == 1:
         assert parallelism_config.tp_size >= 1, (
             f"Pure TP mode (ep_size=1) requires tp_size >= 1, got tp_size={parallelism_config.tp_size}"
@@ -218,7 +221,6 @@ def set_parallelism_config(
         )
     elif parallelism_config.ep_size == 0:
         logging.info("parallelism_config.ep_size == 0, auto set to world size")
-        parallelism_config.ep_size = parallelism_config.world_size
         parallelism_config.ep_size = parallelism_config.tp_size * parallelism_config.dp_size
     else:
         assert parallelism_config.ep_size == parallelism_config.tp_size * parallelism_config.dp_size, (
