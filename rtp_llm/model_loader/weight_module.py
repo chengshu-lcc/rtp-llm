@@ -665,7 +665,6 @@ class AtomicWeight(WeightModule):
     def _get_split_func(self):
         return W.gpt_style_tp_strategy[self.name]
 
-
     @classmethod
     def support(
         cls, quant_config: QuantizationConfig, src_weight_info: WeightModule
@@ -761,10 +760,6 @@ class CompositeWeight(WeightModule):
         )
 
     def get_components(self):
-        # QuantWeight composites (kernel + scale) must not be split:
-        # their _postprocess performs joint operations on kernel and scale
-        # (e.g. convert_fp8_weight_params), which would be bypassed if
-        # sub-weights are loaded independently.
         if isinstance(self, QuantWeight):
             return [self]
         res = []
