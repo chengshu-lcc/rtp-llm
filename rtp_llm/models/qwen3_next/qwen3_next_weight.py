@@ -531,7 +531,8 @@ class Qwen3NextWeight(Qwen3NextBaseWeight):
                 CkptWeightInfo(
                     self.prefix + "layers.{i}.linear_attn.in_proj_qkvz.weight",
                     functools.partial(
-                        identity,
+                        reorder_qkvz,
+                        linear_attention_config=self.model_config.linear_attention_config,
                     ),
                 )
             ],

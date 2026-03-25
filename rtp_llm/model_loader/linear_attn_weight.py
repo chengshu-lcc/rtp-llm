@@ -349,8 +349,8 @@ def split_out_linear_channel_scale(
 
 
 _linear_attn_w8a8_per_channel_split_strategy = {
-    W.linear_attn_qkvz_w: split_qkvz_by_group_t,
-    W.linear_attn_qkvz_s: split_qkvz_channel_scale_by_group,
+    W.linear_attn_qkvz_w: split_qkvz_t,
+    W.linear_attn_qkvz_s: split_qkvz_channel_scale,
     W.linear_attn_out_w: split_out_linear_t,
     W.linear_attn_out_s: sp_id,
 }
