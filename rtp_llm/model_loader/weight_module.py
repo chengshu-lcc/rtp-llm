@@ -446,6 +446,7 @@ class AtomicWeight(WeightModule):
             head_num_kv=load_config.head_num_kv,
             size_per_head=load_config.size_per_head,
             use_stack_weight=load_config.use_stack_weight,
+            moe_pure_tp_mode=load_config.moe_pure_tp_mode,
             bits=load_config.bit,
         )
 
