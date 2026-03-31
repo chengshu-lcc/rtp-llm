@@ -513,6 +513,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             weights, W.linear_attn_out_w, W.linear_attn_out_s, None, quant_config
         )
 
+    # mixed_qkvz, mixed_ba -> q, k, v, z, b, a
     def fix_query_key_value_ordering(
         self, mixed_qkvz: torch.Tensor, mixed_ba: torch.Tensor
     ) -> tuple[
@@ -532,6 +533,8 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         b, a = torch.split(
             mixed_ba, [self.local_num_v_heads, self.local_num_v_heads], dim=1
         )
+        # reshape to [token, v_head_num, v_head_dim]
+        # b,a should be contiguous for fused_gdn_gating
         return mixed_qkv, z, b, a
 
     def forward(
