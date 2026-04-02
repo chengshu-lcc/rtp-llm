@@ -100,6 +100,7 @@ class FusedMoeDataRouter(ABC):
         topk_ids: torch.Tensor,
         apply_router_weight_on_input: bool,
         extra_finalize_args: Optional[Dict[str, Any]],
+        skip_allreduce: bool = False,
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -185,6 +186,7 @@ class FusedMoe(torch.nn.Module):
         apply_router_weight_on_input: bool = False,
         extra_expert_args: Optional[Dict[str, Any]] = None,
         extra_finalize_args: Optional[Dict[str, Any]] = None,
+        skip_allreduce: bool = False,
     ) -> torch.Tensor:
 
         a1 = hidden_states
@@ -238,6 +240,7 @@ class FusedMoe(torch.nn.Module):
             expert_payload.expert_topk_ids,
             apply_router_weight_on_input,
             extra_finalize_args,
+            skip_allreduce=skip_allreduce,
         )
 
         assert (

@@ -116,9 +116,10 @@ class PureTpRouterBase(FusedMoeDataRouter):
         topk_ids: torch.Tensor,
         apply_router_weight_on_input: bool,
         extra_finalize_args: Optional[dict[str, Any]],
+        skip_allreduce: bool = False,
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
-        if self.tp_size > 1:
+        if not skip_allreduce and self.tp_size > 1:
             fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
         return fused_expert_output
 
@@ -225,9 +226,7 @@ class PureTpRouterW4a8Int4PerChannel(PureTpRouterBase):
         super().check_conditions(checker, config)
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
-        checker.check(
-            quant_method in ["W4A8_INT4_PER_CHANNEL"]
-        )
+        checker.check(quant_method in ["W4A8_INT4_PER_CHANNEL"])
 
     def _do_quant(
         self, a1: torch.Tensor
