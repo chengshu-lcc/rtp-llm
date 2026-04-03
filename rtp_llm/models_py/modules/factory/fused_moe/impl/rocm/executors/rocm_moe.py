@@ -19,7 +19,6 @@ from rtp_llm.models_py.modules.factory.fused_moe.defs.type import ExecutorType
 from rtp_llm.models_py.modules.factory.fused_moe.utils.config_resolver import (
     MoeConfigResolver,
 )
-
 from rtp_llm.utils.model_weight import W
 
 BLOCK_SIZE_M = 32
@@ -133,7 +132,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
         checker.check(
-            quant_method == "FP8_PER_CHANNEL_COMPRESSED"
+            quant_method in ("FP8_PER_CHANNEL_COMPRESSED", "FP8_PER_CHANNEL_QUARK")
         )
 
     @property
@@ -162,6 +161,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
         self.w2 = weights[W.moe_w2]
         self.w1_scale = weights[W.moe_s1]
         self.w2_scale = weights[W.moe_s2]
+
     @property
     def local_num_experts(self) -> int:
         return self.w1.size(0)
@@ -195,17 +195,21 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
 
         topk_ids = payload.expert_topk_ids
         topk_weights = payload.expert_topk_weights
-    
+
         device = topk_ids.device
         M, topk = topk_ids.shape
         model_dim = self.w1.size(2)
         num_token = payload.expert_x.size(0)
         inter_dim = self.w2.size(2)
-    
+
         max_num_tokens_padded = M * topk + global_E * BLOCK_SIZE_M - topk
 
-        max_num_m_blocks = int((max_num_tokens_padded + BLOCK_SIZE_M - 1) // BLOCK_SIZE_M)
-        sorted_ids = torch.empty((max_num_tokens_padded,), dtype=torch.int32, device=device)
+        max_num_m_blocks = int(
+            (max_num_tokens_padded + BLOCK_SIZE_M - 1) // BLOCK_SIZE_M
+        )
+        sorted_ids = torch.empty(
+            (max_num_tokens_padded,), dtype=torch.int32, device=device
+        )
         sorted_weights = torch.empty(
             (max_num_tokens_padded,), dtype=torch.float32, device=device
         )
@@ -213,8 +217,10 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
             (max_num_m_blocks,), dtype=torch.int32, device=device
         )
         num_valid_ids = torch.empty((2,), dtype=torch.int32, device=device)
-        moe_out = torch.empty((num_token, model_dim), dtype=torch.bfloat16, device=device)
-        
+        moe_out = torch.empty(
+            (num_token, model_dim), dtype=torch.bfloat16, device=device
+        )
+
         aiter.moe_sorting_fwd(
             topk_ids,
             topk_weights,
@@ -229,8 +235,10 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
             num_local_tokens=None,
             dispatch_policy=0,
         )
-        
-        tmp_out = torch.zeros((num_token, topk, inter_dim), dtype=torch.bfloat16, device=device)
+
+        tmp_out = torch.zeros(
+            (num_token, topk, inter_dim), dtype=torch.bfloat16, device=device
+        )
 
         aiter.moe_stage1_g1u1(
             payload.expert_x,
@@ -250,8 +258,14 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
             w1_scale=self.w1_scale,
             sorted_weights=None,
         )
-        a2_quant_scale = torch.empty((num_token, topk, 1), dtype=torch.float32, device=device)
-        a2 = torch.empty((num_token, topk, inter_dim), dtype=self.quant_config.quant_dtype, device=device)
+        a2_quant_scale = torch.empty(
+            (num_token, topk, 1), dtype=torch.float32, device=device
+        )
+        a2 = torch.empty(
+            (num_token, topk, inter_dim),
+            dtype=self.quant_config.quant_dtype,
+            device=device,
+        )
         aiter.dynamic_per_token_scaled_quant(a2, tmp_out, a2_quant_scale)
         aiter.ck_moe_stage2(
             a2,
@@ -268,7 +282,7 @@ class RocmExpertsFp8PerChannel(FusedMoeExpertExecutor):
             BLOCK_SIZE_M,
             sorted_weights,
             aiter.QuantType.per_Token,
-            aiter.ActivationType.Silu
+            aiter.ActivationType.Silu,
         )
-        
+
         return CombineForwardPayload(fused_expert_output=moe_out)
