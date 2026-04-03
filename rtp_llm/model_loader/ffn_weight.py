@@ -459,16 +459,7 @@ class MoeWeight(CompositeWeight):
     def _postprocess(
         self, tensor: Dict[str, torch.Tensor], device: str, load_config: LoadConfig
     ):
-        moe_w1 = tensor.get(W.moe_w1)
-        moe_w2 = tensor.get(W.moe_w2)
-        for weight, keys in [
-            (moe_w1, [W.moe_w1, W.moe_s1]),
-            (moe_w2, [W.moe_w2, W.moe_s2]),
-        ]:
-            if isinstance(weight, dict):
-                for key in keys:
-                    if key in weight:
-                        self._shuff_moe_weight(key, weight, load_config)
-            else:
-                self._shuff_moe_weight(keys[0], tensor, load_config)
+        # MoE weight shuffle is handled by MoeAtomicWeight._postprocess
+        # (called via CompositeWeight._postprocess's recursive sub_weight loop).
+        # Do NOT shuffle here to avoid double-shuffle.
         return super()._postprocess(tensor, device, load_config)
