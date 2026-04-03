@@ -19,6 +19,7 @@ from rtp_llm.models_py.modules import (
     FMHAImplBase,
     LinearFactory,
     RMSNorm,
+    RMSResNorm,
 )
 from rtp_llm.models_py.triton_kernels.causal_conv1d import (
     CausalConv1dMetadata,
@@ -34,6 +35,9 @@ from rtp_llm.models_py.triton_kernels.fla.block import (
 from rtp_llm.models_py.triton_kernels.fla.chunk import chunk_gated_delta_rule
 from rtp_llm.models_py.triton_kernels.fla.fused_recurrent import (
     fused_recurrent_gated_delta_rule,
+)
+from rtp_llm.models_py.triton_kernels.fla.fused_sigmoid_gating_recurrent import (
+    fused_sigmoid_gating_delta_rule_update,
 )
 from rtp_llm.models_py.triton_kernels.fla.gdn_gating import fused_gdn_gating
 from rtp_llm.models_py.utils.debug import cudagraph_debug_kernel
@@ -350,18 +354,16 @@ class Qwen3NextGatedDeltaNetDecode(Qwen3NextGatedDeltaNetBase):
             ],
             dim=2,
         )
-        g, beta = fused_gdn_gating(self.alog, a, b, self.dt_bias)
 
-        # contiguous will be applyed when call fused_recurrent_gated_delta_rule
-        g = g.view(batch, seq, self.local_num_v_heads)
-        beta = beta.view(batch, seq, self.local_num_v_heads)
         ssm_states = self._get_ssm_states(kv_cache_tensor)
-        core_attn_out, _ = fused_recurrent_gated_delta_rule(
+        core_attn_out, _ = fused_sigmoid_gating_delta_rule_update(
+            A_log=self.alog,
+            a=a,
+            dt_bias=self.dt_bias,
             q=query,
             k=key,
             v=value,
-            g=g,
-            beta=beta,
+            b=b,
             scale=None,
             initial_state=ssm_states,
             inplace_final_state=True,
@@ -369,6 +371,8 @@ class Qwen3NextGatedDeltaNetDecode(Qwen3NextGatedDeltaNetBase):
             seq_size_per_block=seq_size_per_block,
             sequence_lengths=attn_inputs.sequence_lengths_plus_1_d,
             use_qk_l2norm_in_kernel=True,
+            softplus_beta=1.0,
+            softplus_threshold=20.0,
         )
         res = core_attn_out.reshape(
             [-1, core_attn_out.shape[2], core_attn_out.shape[3]]
@@ -509,7 +513,6 @@ class Qwen3NextGatedDeltaNet(nn.Module):
             weights, W.linear_attn_out_w, W.linear_attn_out_s, None, quant_config
         )
 
-    # mixed_qkvz, mixed_ba -> q, k, v, z, b, a
     def fix_query_key_value_ordering(
         self, mixed_qkvz: torch.Tensor, mixed_ba: torch.Tensor
     ) -> tuple[
@@ -529,8 +532,6 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         b, a = torch.split(
             mixed_ba, [self.local_num_v_heads, self.local_num_v_heads], dim=1
         )
-        # reshape to [token, v_head_num, v_head_dim]
-        # b,a should be contiguous for fused_gdn_gating
         return mixed_qkv, z, b, a
 
     def forward(
@@ -621,24 +622,24 @@ class Qwen3NextDecoderLayer(nn.Module):
                 config.activation_type, parallelism_config, weights, config.quant_config
             )
 
-        self.input_layernorm = RMSNorm(
+        self.input_layernorm = RMSResNorm(
             weights[W.pre_ln_gamma], eps=config.layernorm_eps
         )
-        self.post_attention_layernorm = RMSNorm(
+        self.post_attention_layernorm = RMSResNorm(
             weights[W.post_ln_gamma], eps=config.layernorm_eps
         )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor,
         fmha_impl: FMHAImplBase,
         kv_cache: Optional[LayerKVCache] = None,
         attention_inputs: Optional[PyAttentionInputs] = None,
         attn_meta: Qwen3NextMetadata = Qwen3NextMetadata(),
-    ) -> torch.Tensor:
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        # Self Attention
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
             fmha_impl=fmha_impl,
@@ -646,13 +647,12 @@ class Qwen3NextDecoderLayer(nn.Module):
             attention_inputs=attention_inputs,
             attn_meta=attn_meta,
         )
-        hidden_states = residual + hidden_states
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-        return hidden_states
+
+        return hidden_states, residual
 
 
 class Qwen3NextModel(GptModelBase):
@@ -699,7 +699,7 @@ class Qwen3NextModel(GptModelBase):
                 for idx in range(self.layer_num)
             ]
         )
-        self.norm = RMSNorm(
+        self.norm = RMSResNorm(
             weights.get_global_weight(W.final_ln_gamma), eps=model_config.layernorm_eps
         )
 
@@ -720,23 +720,21 @@ class Qwen3NextModel(GptModelBase):
 
         attn_meta = Qwen3NextMetadata(prefill_conv1d_meta, is_target_verify)
 
-        # qwen3_next model has only one full group (group 0): use fmha_impl from input param
-        # if there is a model with more than 1 full groups,
-        # we should prepare fmha_impl for each full group/ fix later
-
         if fmha_impl is None:
             fmha_impl = self.prepare_fmha_impl(inputs)
 
+        residual = torch.zeros_like(hidden_states)
+
         for i, decoder_layer in enumerate(self.layers):
-            # Switch to correct block_map for this layer in hybrid attention mode
             select_block_map_for_layer(attention_inputs, i)
-            hidden_states = decoder_layer(
+            hidden_states, residual = decoder_layer(
                 hidden_states,
+                residual,
                 fmha_impl,
                 kv_cache=self.kv_cache.get_layer_cache(i) if self.kv_cache else None,
                 attention_inputs=attention_inputs,
                 attn_meta=attn_meta,
             )
 
-        hidden_states = self.norm(hidden_states)
+        hidden_states, residual = self.norm(hidden_states, residual)
         return PyModelOutputs(hidden_states, fmha_impl.fmha_params)

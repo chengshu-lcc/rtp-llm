@@ -6,6 +6,7 @@ from torch import nn
 
 from rtp_llm.config.model_config import ModelConfig
 from rtp_llm.model_loader.model_weight_info import ModelWeights
+from rtp_llm.models_py.distributed.collective_torch import Group, all_reduce
 from rtp_llm.models_py.model_desc.block_map import select_block_map_for_layer
 from rtp_llm.models_py.model_desc.module_base import GptModelBase
 from rtp_llm.models_py.modules import (
@@ -85,6 +86,7 @@ class GenericMoeLayer(nn.Module):
         ), "Weights w1 and w2 must be provided"
         self.num_local_experts = self.w1.shape[0]
         self.add_shared_expert = config.moe_style == 2
+        self.tp_size = parallelism_config.tp_size
         if self.add_shared_expert:
             self.shared_expert = DenseMLP(
                 config.activation_type, parallelism_config, weights, quant_config
@@ -146,15 +148,22 @@ class GenericMoeLayer(nn.Module):
 
         if self.fake_balance_expert is not None:
             self.fake_balance_expert(topk_ids, topk_weights)
+        # Optimize allreduce: when shared expert exists and TP > 1,
+        # skip individual allreduce in fused_moe and shared_expert,
+        # then do a unified allreduce after combining outputs.
+        use_unified_allreduce = self.add_shared_expert and self.tp_size > 1
 
         experts_output = self.fused_moe(
             hidden_states=hidden_states,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
             activation="SiGLU",
+            skip_allreduce=use_unified_allreduce,
         )
         if self.shared_expert is not None:
-            shared_expert_output = self.shared_expert(hidden_states)
+            shared_expert_output = self.shared_expert(
+                hidden_states, skip_allreduce=use_unified_allreduce
+            )
             if self.shared_expert_gate is not None:
                 gate_output = self.shared_expert_gate(hidden_states)  # [T, 1]
                 # Fused: experts_output += sigmoid(gate_output) * shared_expert_output
@@ -163,6 +172,11 @@ class GenericMoeLayer(nn.Module):
                 )
             else:
                 experts_output = experts_output + shared_expert_output
+
+            # Unified allreduce after combining shared and routed expert outputs
+            if use_unified_allreduce:
+                experts_output = all_reduce(experts_output, group=Group.TP)
+
         return experts_output
 
 
@@ -248,22 +262,16 @@ class GenericMoeDecoderLayer(nn.Module):
         fmha_impl: FMHAImplBase,
         kv_cache: Optional[LayerKVCache] = None,
     ) -> DecodeLayerOutput:
-        # equivalent to:
-        # residual = residual + hidden_states
-        # hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.input_layernorm(hidden_states, residual)
+        hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
         hidden_states = self.self_attn(
             hidden_states=hidden_states, fmha_impl=fmha_impl, kv_cache=kv_cache
         )
 
-        # Fused: residual = residual + hidden_states, hidden_states = RMSNorm(residual)
-        hidden_states = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
-        # MLP (Dense or MoE，shared expert 逻辑已经在 GenericMoeLayer 内部处理)
         hidden_states = self.mlp(hidden_states)
 
-        # 返回 mlp_output 和 residual，让下一层的 input_layernorm 来 fuse 最后的 add
         return DecodeLayerOutput(hidden_states, residual)
 
 
@@ -339,7 +347,7 @@ class GenericMoeModel(GptModelBase):
             hidden_states = output.hidden_states
             residual = output.residual
 
-        hidden_states = self.norm(hidden_states, residual)
+        hidden_states, _ = self.norm(hidden_states, residual)
 
         return PyModelOutputs(hidden_states, fmha_impl.fmha_params)
 
