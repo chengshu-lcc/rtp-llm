@@ -149,8 +149,10 @@ class LinearFactory:
 
         # Get input_scales if available
 
-        # Create instance directly with all parameters
-        instance = selected_class(
+        # Build init kwargs; only pass hw_kernel_config when the
+        # selected strategy accepts it, to stay compatible with
+        # existing implementations that don't declare the parameter.
+        init_kwargs = dict(
             weight=weight,
             weight_scales=weight_scales,
             input_scales=input_scale,
@@ -158,6 +160,13 @@ class LinearFactory:
             quant_config=quant_config,
             weight_scale_2=weight_scale_2,
         )
+
+        import inspect
+        init_sig = inspect.signature(selected_class.__init__)
+        if "hw_kernel_config" in init_sig.parameters:
+            init_kwargs["hw_kernel_config"] = hw_kernel_config
+
+        instance = selected_class(**init_kwargs)
 
         return instance
 

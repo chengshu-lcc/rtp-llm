@@ -902,11 +902,13 @@ class RocmImpl(GpuImpl):
             W.linear_attn_out_w,
         ]:
             if self.py_env_configs.py_hw_kernel_config.use_swizzleA:
-                if (
-                    self.py_env_configs.model_specific_config.load_python_model
-                    and weight.dtype != torch.float8_e4m3fn
-                ):
-                    weight = swizzle_tensor(weight.t(), False).t()
+                if self.py_env_configs.model_specific_config.load_python_model:
+                    # Python model path: use shuffle_gemm_weight for all weights.
+                    # swizzle_tensor produces hipBLASLt COL16_4R8 layout which is
+                    # incompatible with aiter's hipb_mm(bpreshuffle=True).
+                    # shuffle_gemm_weight produces shuffle_weight(w, (16,16)) layout
+                    # which is what hipb_mm(bpreshuffle=True) expects.
+                    weight = self.shuffle_gemm_weight(weight)
                 else:
                     weight = swizzle_tensor(weight, weight.dtype != torch.float8_e4m3fn)
             elif weight.dtype == torch.float8_e4m3fn:

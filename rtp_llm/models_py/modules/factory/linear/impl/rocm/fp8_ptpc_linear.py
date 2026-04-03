@@ -5,7 +5,9 @@ from typing import Optional
 
 import aiter
 import torch
+from aiter import hipb_mm, hipb_create_extension
 from aiter.ops.gemm_op_a8w8 import gemm_a8w8_bpreshuffle_cktile
+from functools import lru_cache
 
 from rtp_llm.models_py.modules.factory.linear import LinearBase
 
@@ -13,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 from rtp_llm.models_py.kernels.rocm.fp8_kernel import rocm_per_token_quant_fp8
 from rtp_llm.ops import HWKernelConfig
-
 
 class RocmFp8PTPCLinear(LinearBase):
     """ROCm FP8 PTPC (Per-Token Per-Channel) quantized Linear"""
@@ -40,6 +41,11 @@ class RocmFp8PTPCLinear(LinearBase):
         quant_method = quant_config.get_method()
         return quant_method in ("FP8_PER_CHANNEL_COMPRESSED", "FP8_PER_CHANNEL_QUARK")
 
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _init_hipblas():
+        hipb_create_extension()
+
     def __init__(
         self,
         weight: torch.Tensor,
@@ -48,6 +54,7 @@ class RocmFp8PTPCLinear(LinearBase):
         bias: Optional[torch.Tensor] = None,
         quant_config: object = None,
         weight_scale_2: Optional[torch.Tensor] = None,
+        hw_kernel_config: Optional["HWKernelConfig"] = None,
     ):
         super().__init__(
             weight, weight_scales, input_scales, bias, quant_config, weight_scale_2
@@ -60,58 +67,66 @@ class RocmFp8PTPCLinear(LinearBase):
             [weight_scales.shape[1], weight_scales.shape[0]]
         )
         self.bias = bias
+        self.use_hipb_mm = (
+            hw_kernel_config is not None and hw_kernel_config.use_swizzleA
+        )
+
+    def _forward_hipb_mm(self, input_fp8: torch.Tensor, input_scales: torch.Tensor,
+                         output_dtype: torch.dtype) -> torch.Tensor:
+        """FP8 GEMM via hipBLASLt (hipb_mm with bpreshuffle)."""
+        self._init_hipblas()
+        # hipb_mm expects weight as (k, n), so transpose from stored (n, k)
+        # scaleB needs to be transposed for per-channel layout
+        return hipb_mm(
+            input_fp8,
+            self.weight.t(),
+            solution_index=-1,
+            bias=None,
+            out_dtype=output_dtype,
+            scaleA=input_scales,
+            scaleB=self.weight_scales.t(),
+            scaleOut=None,
+            bpreshuffle=True,
+        )
+
+    def _forward_aiter(self, input_fp8: torch.Tensor, input_scales: torch.Tensor,
+                       output_dtype: torch.dtype) -> torch.Tensor:
+        """FP8 GEMM via aiter CK kernels (gemm_a8w8_bpreshuffle)."""
+        hidden_dim = input_fp8.shape[-1]
+        if hidden_dim < 192:
+            num_tokens = input_fp8.shape[0]
+            output = torch.empty(
+                (num_tokens, self.output_size), dtype=output_dtype,
+                device=input_fp8.device,
+            )
+            gemm_a8w8_bpreshuffle_cktile(
+                input_fp8, self.weight, input_scales, self.weight_scales, output
+            )
+            return output
+        return aiter.gemm_a8w8_bpreshuffle(
+            input_fp8, self.weight, input_scales, self.weight_scales,
+            None, output_dtype,
+        )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         original_dtype = input.dtype
         # Convert to BF16 if needed
-        if input.dtype != torch.bfloat16:
-            input_bf16 = input.to(torch.bfloat16)
-        else:
-            input_bf16 = input
-
-        # Get input dimensions
-        M = input_bf16.shape[0]
-        N = self.output_size
-
-        # Pre-allocate output tensor
-        output = torch.empty((M, N), dtype=torch.bfloat16, device=input_bf16.device)
+        input_bf16 = input if input.dtype == torch.bfloat16 else input.to(torch.bfloat16)
 
         quantization_eps = 1e-10
-        # Use per-token quantization (not per-token-block)
         input_fp8, input_scales = rocm_per_token_quant_fp8(
-            input_bf16,
-            eps=quantization_eps,
+            input_bf16, eps=quantization_eps,
         )
-
         input_scales = input_scales.to(torch.float32)
 
-        # Use per-token scales (M, 1)
-        x_scales = input_scales
-        w_scales = self.weight_scales
-
-        K = input_fp8.shape[-1]
-        if K < 192:
-            output = torch.empty(
-                (M, N), dtype=input_bf16.dtype, device=input_bf16.device
-            )
-            gemm_a8w8_bpreshuffle_cktile(
-                input_fp8, self.weight, x_scales, w_scales, output
-            )
+        if self.use_hipb_mm:
+            output = self._forward_hipb_mm(input_fp8, input_scales, input_bf16.dtype)
         else:
-            output = aiter.gemm_a8w8_bpreshuffle(
-                input_fp8,
-                self.weight,
-                x_scales,
-                w_scales,
-                None,
-                input_bf16.dtype,
-            )
+            output = self._forward_aiter(input_fp8, input_scales, input_bf16.dtype)
 
-        # Add bias if present
         if self.bias is not None:
             output = output + self.bias.to(output.dtype)
 
-        # Convert back to original dtype if needed
         if output.dtype != original_dtype:
             output = output.to(original_dtype)
 

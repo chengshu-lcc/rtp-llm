@@ -83,13 +83,15 @@ class GenericMoeLayer(nn.Module):
         self.tp_size = parallelism_config.tp_size
         if self.add_shared_expert:
             self.shared_expert = DenseMLP(
-                config.activation_type, parallelism_config, weights, quant_config
+                config.activation_type, parallelism_config, weights, quant_config,
+                hw_kernel_config=hw_kernel_config,
             )
         else:
             self.shared_expert = None
         if weights.get(W.shared_expert_gate, None) is not None:
             self.shared_expert_gate = LinearFactory.create_linear_from_weights(
-                weights, W.shared_expert_gate, None, None, config
+                weights, W.shared_expert_gate, None, None, config,
+                hw_kernel_config=hw_kernel_config,
             )
             self.sigmoid_gate_scale_add = SigmoidGateScaleAdd()
         else:
