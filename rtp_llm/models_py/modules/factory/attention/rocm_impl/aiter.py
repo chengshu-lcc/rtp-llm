@@ -91,8 +91,14 @@ class FMHAParams(ParamsBase):
             self.sequence_lengths = sequence_lengths
             self.kv_cache_block_id_device = kv_cache_block_id_device
 
-            if self.enable_cuda_graph:
-                self.max_seq_len = 8192
+            if (
+                self.enable_cuda_graph
+                and self.graph_max_seq_len is not None
+                and self.graph_max_seq_len > 0
+            ):
+                self.max_seq_len = self.graph_max_seq_len
+            elif sequence_lengths is not None:
+                self.max_seq_len = sequence_lengths.max().item() + 1
             else:
                 self.max_seq_len = input_lengths.max().item() + 1
 
