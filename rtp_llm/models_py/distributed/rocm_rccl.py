@@ -229,6 +229,32 @@ def set_hipgraph_capture_nccl_comm(
     # stable addresses recorded during capture.
     _hipgraph_allgather_outputs.clear()
 
+def _pre_init_trtllm_allreduce(
+    tp_group: Optional[torch.distributed.ProcessGroup] = None,
+) -> None:
+    """Pre-initialize trt_allreduce before graph capture.
+
+    Must be called before entering graph capture mode so that
+    TrtllmDistEnv.__init__ (which does hipMalloc and dist.all_gather_object)
+    runs outside of stream capture where those operations are forbidden.
+    """
+    if not _is_rocm_runtime:
+        return
+    if _rccl_world_size <= 1:
+        return
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            ensure_trtllm_comm_initialized,
+        )
+        if not torch.distributed.is_initialized():
+            return
+        if tp_group is None:
+            tp_group = torch.distributed.group.WORLD
+        device_id = torch.cuda.current_device()
+        ensure_trtllm_comm_initialized(group=tp_group, device_id=device_id)
+        logging.info("Pre-init trtllm_allreduce succeeded (device_id=%s)", device_id)
+    except Exception as exc:
+        logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
 
 def bootstrap_hipgraph_capture_rccl_comm_from_tp_group(
     tp_group: torch.distributed.ProcessGroup,
@@ -309,6 +335,9 @@ def prepare_hipgraph_capture_rccl_comm_if_needed(
         return
     # IMPORTANT: bootstrap must happen before graph capture begins.
     bootstrap_hipgraph_capture_rccl_comm_from_tp_group(tp_group)
+    # Pre-initialize trt_allreduce with the correct TP group so that
+    # hipgraph_capture_all_reduce can use it during graph capture.
+    _pre_init_trtllm_allreduce(tp_group)
 
 
 def enter_hipgraph_capture_mode(
@@ -348,6 +377,12 @@ def exit_hipgraph_capture_mode() -> None:
     the C++ side calls set_graph_capture_nccl_comm(0, 0, rank) explicitly.
     Adding comm cleanup here would break replay on subsequent capture rounds.
     """
+    # Capture state is owned by C++ side and queried via is_hipgraph_capture_enabled().
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import consume_capture
+        consume_capture()
+    except Exception:
+        pass
     return
 
 
@@ -375,7 +410,70 @@ def ensure_tp_rccl_comm_for_capture(is_tp_group: bool) -> None:
         )
 
 
-def hipgraph_capture_all_reduce(tensor: torch.Tensor) -> None:
+def _is_hidden_size_supported_for_trtllm(hidden_size: int) -> bool:
+    """Check if hidden_size is supported by trtllm allreduce kernels.
+
+    In TP (Tensor Parallelism), allreduce happens after row-parallel linear
+    layers, so the input tensor's last dimension is the full hidden_size
+    (not TP-split). This matches the kernel's hidden_dim parameter which
+    is taken from allreduce_in.size(-1) in C++.
+    """
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            ALLREDUCE_SUPPORTED_HIDDEN_SIZES,
+        )
+        return hidden_size in ALLREDUCE_SUPPORTED_HIDDEN_SIZES
+    except Exception:
+        return False
+
+def _is_trtllm_allreduce_ready() -> bool:
+    """Check if trt_allreduce is already initialized and usable.
+
+    Must not trigger initialization during graph capture, because
+    TrtllmDistEnv.__init__ does hipMalloc and dist.all_gather_object
+    which are forbidden during stream capturing.
+    """
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            _trtllm_comm_manager,
+        )
+        return (
+            _trtllm_comm_manager is not None
+            and _trtllm_comm_manager.initialized
+            and _trtllm_comm_manager.dist_env is not None
+            and not _trtllm_comm_manager.dist_env.disabled
+        )
+    except Exception:
+        return False
+
+def hipgraph_capture_all_reduce(
+    tensor: torch.Tensor,
+    process_group: Optional[torch.distributed.ProcessGroup] = None,
+) -> torch.Tensor:
+    # Try trt_allreduce first if already initialized and hidden_size is supported;
+    # never attempt first-time initialization during graph capture (hipMalloc is forbidden).
+    if (
+        process_group is not None
+        and _is_hidden_size_supported_for_trtllm(tensor.shape[-1])
+        and _is_trtllm_allreduce_ready()
+    ):
+        try:
+            from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+                allreduce as trtllm_allreduce,
+            )
+            device_id = torch.cuda.current_device()
+            return trtllm_allreduce(
+                allreduce_in=tensor,
+                group=process_group,
+                device_id=device_id,
+            )
+        except Exception as exc:
+            logging.warning(
+                "trtllm_allreduce failed in graph capture mode, "
+                "fallback to ncclAllReduce: %s", exc,
+            )
+
+    # Fallback to lib.ncclAllReduce (in-place, returns original tensor)
     lib, rccl_comm = _get_rccl_runtime()
     result = lib.ncclAllReduce(
         tensor.data_ptr(),
@@ -388,6 +486,7 @@ def hipgraph_capture_all_reduce(tensor: torch.Tensor) -> None:
     )
     if result != _NCCL_SUCCESS:
         raise RuntimeError(f"ncclAllReduce failed with error code {result}")
+    return tensor
 
 
 def hipgraph_capture_all_gather(tensor: torch.Tensor) -> torch.Tensor:
@@ -468,8 +567,11 @@ def ensure_capture_comm_ready(is_tp_group: bool) -> None:
     ensure_tp_rccl_comm_for_capture(is_tp_group)
 
 
-def capture_all_reduce(tensor: torch.Tensor) -> None:
-    hipgraph_capture_all_reduce(tensor)
+def capture_all_reduce(
+    tensor: torch.Tensor,
+    process_group: Optional[torch.distributed.ProcessGroup] = None,
+) -> torch.Tensor:
+    return hipgraph_capture_all_reduce(tensor, process_group)
 
 
 def capture_all_gather(tensor: torch.Tensor) -> torch.Tensor:
