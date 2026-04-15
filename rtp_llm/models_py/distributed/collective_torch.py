@@ -17,6 +17,20 @@ from rtp_llm.models_py.distributed.symm_mem import (
 )
 from rtp_llm.ops import NcclCommConfig, ParallelismConfig
 
+# ---------------------------------------------------------------------------
+# ROCm AllReduce feature flags (read once at import time)
+# ---------------------------------------------------------------------------
+_is_rocm_runtime = rocm_rccl.is_available_runtime()
+
+_enable_aiter_custom_ar: bool = (
+    os.environ.get("ENABLE_AITER_CUSTOM_AR", "0") == "1" and _is_rocm_runtime
+)
+
+_enable_quick_allreduce: bool = (
+    os.environ.get("AITER_QUICK_REDUCE_QUANTIZATION", "NONE") != "NONE"
+    and _is_rocm_runtime
+)
+
 # ParallelMode enum values matching C++ rtp_llm::ParallelMode in OpData.h
 _CPP_PARALLEL_MODE_TP = 0
 _CPP_PARALLEL_MODE_DP = 1
@@ -477,8 +491,63 @@ def broadcast(tensor: torch.Tensor, src: int, group: Group) -> None:
     torch.distributed.broadcast(tensor, src, group=process_group)
 
 
+# ---------------------------------------------------------------------------
+# AllReduce tier helpers — each returns Optional[Tensor]
+# ---------------------------------------------------------------------------
+
+def _try_quick_allreduce(
+    tensor: torch.Tensor, tp_group: torch.distributed.ProcessGroup, tp_rank: int,
+) -> Optional[torch.Tensor]:
+    """Tier 1: Quick AllReduce (opt-in, fastest, lossy quantization)."""
+    try:
+        from rtp_llm.models_py.modules.base.rocm.quick_allreduce import quick_ar_manager
+
+        if quick_ar_manager.should_use(tensor, tp_group, tp_rank):
+            return quick_ar_manager.allreduce(tensor)
+    except Exception as e:
+        logging.warning("Quick AllReduce failed, fallback to next tier: %s", e)
+    return None
+
+def _try_trtllm_allreduce(
+    tensor: torch.Tensor, tp_group: torch.distributed.ProcessGroup, tp_rank: int,
+) -> Optional[torch.Tensor]:
+    """Tier 2: trtllm allreduce (lossless, hidden-size restricted)."""
+    if not rocm_rccl._is_hidden_size_supported_for_trtllm(tensor.shape[-1]):
+        return None
+    if not rocm_rccl._is_trtllm_allreduce_ready():
+        return None
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            _trtllm_comm_manager,
+            allreduce as trtllm_allreduce,
+        )
+
+        max_size = _trtllm_comm_manager.dist_env.handle.get_max_size()
+        if tensor.numel() * tensor.element_size() <= max_size:
+            return trtllm_allreduce(
+                allreduce_in=tensor, group=tp_group, device_id=tp_rank,
+            )
+    except Exception as e:
+        logging.warning("trtllm_allreduce failed, fallback to next tier: %s", e)
+    return None
+
+def _try_aiter_custom_allreduce(
+    tensor: torch.Tensor, tp_group: torch.distributed.ProcessGroup, tp_rank: int,
+) -> Optional[torch.Tensor]:
+    """Tier 3: aiter CustomAllreduce (P2P, lossless)."""
+    try:
+        from rtp_llm.models_py.modules.base.rocm.aiter_custom_allreduce import aiter_ar_manager
+
+        if aiter_ar_manager.should_use(tensor, tp_group, tp_rank):
+            return aiter_ar_manager.allreduce(tensor)
+    except Exception as e:
+        logging.warning("aiter CustomAllreduce failed, fallback to next tier: %s", e)
+    return None
+
 def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
     """All-reduce a tensor across all ranks in the group.
+
+    Priority: quick_AR → trtllm → aiter custom AR → symm_mem → NCCL
 
     Args:
         tensor: Tensor to all-reduce (will be modified in-place)
@@ -491,6 +560,26 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
     if rocm_rccl.should_use_capture_collectives(group == Group.TP):
         return rocm_rccl.capture_all_reduce(tensor, _get_group(group))
 
+    # ROCm TP accelerated allreduce tiers
+    if _is_rocm_runtime and group == Group.TP:
+        tp_group = _get_group(group)
+        tp_rank = _parallelism_config.tp_rank
+
+        if _enable_quick_allreduce:
+            result = _try_quick_allreduce(tensor, tp_group, tp_rank)
+            if result is not None:
+                return result
+
+        result = _try_trtllm_allreduce(tensor, tp_group, tp_rank)
+        if result is not None:
+            return result
+
+        if _enable_aiter_custom_ar:
+            result = _try_aiter_custom_allreduce(tensor, tp_group, tp_rank)
+            if result is not None:
+                return result
+
+    # symm_mem (CUDA only)
     if group == Group.TP:
         symm_mem_comm = get_symm_mem_communicator()
         if symm_mem_comm is not None and symm_mem_comm.should_torch_symm_mem_allreduce(
@@ -498,6 +587,7 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
         ):
             return symm_mem_comm.all_reduce(tensor)
 
+    # NCCL fallback
     process_group = _get_group(group)
     torch.distributed.all_reduce(
         tensor, op=torch.distributed.ReduceOp.SUM, group=process_group
