@@ -43,6 +43,65 @@ def l2norm_fwd_kernel1(
     tl.store(y + cols, b_y, mask=mask)
 
 
+@triton.jit
+def fused_l2norm_qk_kernel(
+    q,
+    k,
+    q_out,
+    k_out,
+    eps,
+    T: tl.constexpr,
+    D: tl.constexpr,
+    BT: tl.constexpr,
+    BD: tl.constexpr,
+):
+    i_t = tl.program_id(0)
+
+    rows = i_t * BT + tl.arange(0, BT)
+    cols = tl.arange(0, BD)
+    row_mask = rows < T
+    col_mask = cols < D
+    mask = row_mask[:, None] & col_mask[None, :]
+    offs = rows[:, None] * D + cols[None, :]
+
+    b_q = tl.load(q + offs, mask=mask, other=0.0).to(tl.float32)
+    b_q_var = tl.sum(b_q * b_q, axis=1)
+    b_q_out = b_q / tl.sqrt(b_q_var + eps)[:, None]
+    tl.store(q_out + offs, b_q_out.to(q_out.dtype.element_ty), mask=mask)
+
+    b_k = tl.load(k + offs, mask=mask, other=0.0).to(tl.float32)
+    b_k_var = tl.sum(b_k * b_k, axis=1)
+    b_k_out = b_k / tl.sqrt(b_k_var + eps)[:, None]
+    tl.store(k_out + offs, b_k_out.to(k_out.dtype.element_ty), mask=mask)
+
+
+@triton.jit
+def fused_l2norm_qk_kernel1(
+    q,
+    k,
+    q_out,
+    k_out,
+    D,
+    BD: tl.constexpr,
+    eps,
+):
+    i_t = tl.program_id(0)
+
+    cols = tl.arange(0, BD)
+    mask = cols < D
+    offs = i_t * D + cols
+
+    b_q = tl.load(q + offs, mask=mask, other=0.0).to(tl.float32)
+    b_q_var = tl.sum(b_q * b_q, axis=0)
+    b_q_out = b_q / tl.sqrt(b_q_var + eps)
+    tl.store(q_out + offs, b_q_out.to(q_out.dtype.element_ty), mask=mask)
+
+    b_k = tl.load(k + offs, mask=mask, other=0.0).to(tl.float32)
+    b_k_var = tl.sum(b_k * b_k, axis=0)
+    b_k_out = b_k / tl.sqrt(b_k_var + eps)
+    tl.store(k_out + offs, b_k_out.to(k_out.dtype.element_ty), mask=mask)
+
+
 # @triton.autotune(
 #     configs=[
 #         triton.Config({"BT": BT}, num_warps=num_warps)
@@ -122,6 +181,69 @@ def l2norm_fwd(
         )
 
     return y.view(x_shape_og)
+
+
+def fused_l2norm_qk(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    eps: float = 1e-6,
+    output_dtype: Optional[torch.dtype] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    assert q.shape == k.shape, (
+        f"fused_l2norm_qk expects q and k to share shape, got {q.shape} vs {k.shape}"
+    )
+    assert q.dtype == k.dtype, (
+        f"fused_l2norm_qk expects q and k to share dtype, got {q.dtype} vs {k.dtype}"
+    )
+    q_shape_og = q.shape
+    q_flat = q.view(-1, q.shape[-1])
+    k_flat = k.view(-1, k.shape[-1])
+    T, D = q_flat.shape
+
+    if output_dtype is None:
+        q_out = torch.empty_like(q_flat)
+        k_out = torch.empty_like(k_flat)
+    else:
+        q_out = torch.empty_like(q_flat, dtype=output_dtype)
+        k_out = torch.empty_like(k_flat, dtype=output_dtype)
+    assert q_out.stride(-1) == 1 and k_out.stride(-1) == 1
+
+    MAX_FUSED_SIZE = 65536 // q.element_size()
+    BD = min(MAX_FUSED_SIZE, triton.next_power_of_2(D))
+    if D > BD:
+        raise RuntimeError("This layer doesn't support feature dim >= 64KB.")
+
+    # Same dispatch gate as l2norm_fwd: avoid the BT-tiled path when T varies
+    # across batches, since T is a constexpr there and recompile cost (~70ms)
+    # dwarfs the kernel time (<1ms).
+    if D <= 512 and T <= 128:
+        fused_l2norm_qk_kernel[(triton.cdiv(T, 16),)](
+            q_flat,
+            k_flat,
+            q_out,
+            k_out,
+            eps,
+            T=T,
+            D=D,
+            BT=16,
+            BD=BD,
+            num_warps=8,
+            num_stages=3,
+        )
+    else:
+        fused_l2norm_qk_kernel1[(T,)](
+            q_flat,
+            k_flat,
+            q_out,
+            k_out,
+            eps=eps,
+            D=D,
+            BD=BD,
+            num_warps=8,
+            num_stages=3,
+        )
+
+    return q_out.view(q_shape_og), k_out.view(q_shape_og)
 
 
 class L2NormFunction(torch.autograd.Function):
