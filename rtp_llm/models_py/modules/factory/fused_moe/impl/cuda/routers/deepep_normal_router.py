@@ -197,6 +197,7 @@ class DeepepNormalRouterBase(FusedMoeDataRouter):
         topk_ids: torch.Tensor,
         apply_router_weight_on_input: bool,
         extra_finalize_args: Optional[Dict[str, Any]],
+        skip_allreduce: bool = False,
     ) -> torch.Tensor:
         assert self.handle is not None, "handler is None"
         assert payload.fused_expert_output is not None, "fused_expert_output is None"
@@ -344,9 +345,7 @@ class DeepepNormalRouterW4a8Int4PerChannel(DeepepNormalRouterBase):
         super().check_conditions(checker, config)
         resolver = MoeConfigResolver()
         quant_method = resolver.get_quant_method(config)
-        checker.check(
-            quant_method in ["W4A8_INT4_PER_CHANNEL"]
-        )
+        checker.check(quant_method in ["W4A8_INT4_PER_CHANNEL"])
 
 
 class DeepepNormalRouterFp4PerGroup(DeepepNormalRouterBase):
