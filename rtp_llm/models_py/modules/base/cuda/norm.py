@@ -37,7 +37,7 @@ class RMSResNorm(BaseResNorm):
         rtp_llm_ops.fused_add_rmsnorm(
             hidden_states, residual, self.weight.data, self.variance_epsilon, stream_id
         )
-        return hidden_states
+        return hidden_states, residual
 
 
 class QKRMSNorm(nn.Module):

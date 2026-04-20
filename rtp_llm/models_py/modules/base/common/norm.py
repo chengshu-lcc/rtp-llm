@@ -24,7 +24,7 @@ class BaseResNorm(nn.Module):
 
     def forward(
         self, hidden_states: torch.Tensor, residual: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError()
 
 
@@ -88,8 +88,9 @@ class RMSResNormTorch(BaseResNorm):
         self.rmsnorm_torch = RMSNormTorch(weight, eps)
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor):
-        hidden_states = hidden_states + residual
-        return self.rmsnorm_torch(hidden_states)
+        residual = hidden_states + residual
+        normed = self.rmsnorm_torch(residual)
+        return normed, residual
 
 
 class AddBiasResLayerNormTorch(BaseAddBiasResLayerNorm):
