@@ -49,6 +49,9 @@ inline ParamsPtr PrepareCKAttn(const AttentionConfigs& configs,
     if (batch_size <= 0 || !kv_cache_block_id.defined() || kv_cache_block_id.numel() == 0) {
         return nullptr;
     }
+    TORCH_CHECK(configs.kernel_tokens_per_block > 0,
+                "kernel_tokens_per_block must be > 0 in PrepareCKAttn, got ",
+                configs.kernel_tokens_per_block);
     auto            ck_attn    = std::make_shared<CKAttn>();
     KvCacheDataType cache_type = KvCacheDataType::BASE;
     if (configs.kv_cache_dtype == KvCacheDataType::INT8) {
@@ -62,7 +65,7 @@ inline ParamsPtr PrepareCKAttn(const AttentionConfigs& configs,
                                             torch::TensorOptions(torch::kInt32).device(torch::kCUDA));
     ck_attn->kv_block_array            = KVBlockArray(batch_size,
                                            max_blocks_per_batch,
-                                           configs.tokens_per_block,
+                                           configs.kernel_tokens_per_block,
                                            configs.kv_head_num * configs.size_per_head * elemSize,
                                            0,
                                            0,
@@ -70,7 +73,7 @@ inline ParamsPtr PrepareCKAttn(const AttentionConfigs& configs,
                                            nullptr,
                                            (rtp_llm::KVCacheIndex*)ck_attn->kv_cache_offset.data_ptr<int>());
     ck_attn->kv_block_array.cache_type = cache_type;
-    ck_attn->kv_block_array.mScaleBytesPerBlock = configs.tokens_per_block * configs.kv_head_num * sizeof(float);
+    ck_attn->kv_block_array.mScaleBytesPerBlock = configs.kernel_tokens_per_block * configs.kv_head_num * sizeof(float);
     hipStream_t stream                          = at::hip::getCurrentHIPStream().stream();
     invokeConvertOffsetToBlockArrayData(ck_attn->kv_cache_offset.data_ptr<int>(),
                                         kv_cache_block_id.data_ptr<int>(),
