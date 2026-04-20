@@ -1,0 +1,269 @@
+start env DP_SIZE=1
+start env CHECKPOINT_PATH=/root/Qwen3.5-9B/
+start env START_PORT=8066
+start env TOKENIZER_PATH=/root/Qwen3.5-9B/
+start env NoDefaultCurrentDirectoryInExePath=1
+start env CLAUDE_CODE_PROXY_LOG_FILE=/root/.cache/claude-code-proxy/log/server-38317.log
+start env CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+start env NVM_DIR=/root/.nvm
+start env LD_LIBRARY_PATH=/opt/rocm-6.4.1/llvm/lib:/opt/rocm-6.4.1/lib:/opt/rocm-6.4.1/llvm/lib:/opt/rocm-6.4.1/lib:/opt/rocm-6.4.1/llvm/lib:/opt/rocm-6.4.1/lib:/opt/rh/gcc-toolset-12/root/usr/lib64:/opt/rocm-6.4.1/lib:/usr/local/lib::/lib64:/opt/conda310/lib/
+start env LS_COLORS=rs=0:di=38;5;33:ln=38;5;51:mh=00:pi=40;38;5;11:so=38;5;13:do=38;5;5:bd=48;5;232;38;5;11:cd=48;5;232;38;5;3:or=48;5;232;38;5;9:mi=01;05;37;41:su=48;5;196;38;5;15:sg=48;5;11;38;5;16:ca=48;5;196;38;5;226:tw=48;5;10;38;5;16:ow=48;5;10;38;5;21:st=48;5;21;38;5;15:ex=38;5;40:*.tar=38;5;9:*.tgz=38;5;9:*.arc=38;5;9:*.arj=38;5;9:*.taz=38;5;9:*.lha=38;5;9:*.lz4=38;5;9:*.lzh=38;5;9:*.lzma=38;5;9:*.tlz=38;5;9:*.txz=38;5;9:*.tzo=38;5;9:*.t7z=38;5;9:*.zip=38;5;9:*.z=38;5;9:*.dz=38;5;9:*.gz=38;5;9:*.lrz=38;5;9:*.lz=38;5;9:*.lzo=38;5;9:*.xz=38;5;9:*.zst=38;5;9:*.tzst=38;5;9:*.bz2=38;5;9:*.bz=38;5;9:*.tbz=38;5;9:*.tbz2=38;5;9:*.tz=38;5;9:*.deb=38;5;9:*.rpm=38;5;9:*.jar=38;5;9:*.war=38;5;9:*.ear=38;5;9:*.sar=38;5;9:*.rar=38;5;9:*.alz=38;5;9:*.ace=38;5;9:*.zoo=38;5;9:*.cpio=38;5;9:*.7z=38;5;9:*.rz=38;5;9:*.cab=38;5;9:*.wim=38;5;9:*.swm=38;5;9:*.dwm=38;5;9:*.esd=38;5;9:*.jpg=38;5;13:*.jpeg=38;5;13:*.mjpg=38;5;13:*.mjpeg=38;5;13:*.gif=38;5;13:*.bmp=38;5;13:*.pbm=38;5;13:*.pgm=38;5;13:*.ppm=38;5;13:*.tga=38;5;13:*.xbm=38;5;13:*.xpm=38;5;13:*.tif=38;5;13:*.tiff=38;5;13:*.png=38;5;13:*.svg=38;5;13:*.svgz=38;5;13:*.mng=38;5;13:*.pcx=38;5;13:*.mov=38;5;13:*.mpg=38;5;13:*.mpeg=38;5;13:*.m2v=38;5;13:*.mkv=38;5;13:*.webm=38;5;13:*.ogm=38;5;13:*.mp4=38;5;13:*.m4v=38;5;13:*.mp4v=38;5;13:*.vob=38;5;13:*.qt=38;5;13:*.nuv=38;5;13:*.wmv=38;5;13:*.asf=38;5;13:*.rm=38;5;13:*.rmvb=38;5;13:*.flc=38;5;13:*.avi=38;5;13:*.fli=38;5;13:*.flv=38;5;13:*.gl=38;5;13:*.dl=38;5;13:*.xcf=38;5;13:*.xwd=38;5;13:*.yuv=38;5;13:*.cgm=38;5;13:*.emf=38;5;13:*.ogv=38;5;13:*.ogx=38;5;13:*.aac=38;5;45:*.au=38;5;45:*.flac=38;5;45:*.m4a=38;5;45:*.mid=38;5;45:*.midi=38;5;45:*.mka=38;5;45:*.mp3=38;5;45:*.mpc=38;5;45:*.ogg=38;5;45:*.ra=38;5;45:*.wav=38;5;45:*.oga=38;5;45:*.opus=38;5;45:*.spx=38;5;45:*.xspf=38;5;45:
+start env XPU_ENABLE=1
+start env SIGMA_APP_NAME=tre-aidev
+start env ali_runtime_type=runcv2
+start env SEARCH_API_KEY=
+start env DISABLE_AUTOUPDATER=1
+start env STARAGENT_BIN=/home/staragent/bin
+start env MODULES_RUN_QUARANTINE=LD_LIBRARY_PATH LD_PRELOAD
+start env ANTHROPIC_MODEL=claude-opus-4-7[1m]
+start env LANG=en_US.UTF-8
+start env ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-7[1m]
+start env HISTCONTROL=ignoredups
+start env HOSTNAME=normandy-mlflow-debug-gyra5z-055993-69mhv
+start env OLDPWD=/root/rtp-llm
+start env BONES_SPECIES=cat
+start env WATCHER_HOST_ENTRY=/cloudide/hosted/watcher.process.js
+start env WORKSPACE_UUID=mlflow-debug-gyra5z-055993
+start env EDITOR=vim
+start env CLAUDE_CODE_PROXY_PORT=38317
+start env DefaultMask=255.255.192.0
+start env NVM_CD_FLAGS=
+start env spas_accessKey=02c8bc512f1a438a9334d5b36f9cefdb
+start env DISABLE_INSTALLATION_CHECKS=1
+start env WEB_FETCH_ENDPOINT=
+start env IDE_SERVER_PORT=50998
+start env GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+start env BAZELISK_BASE_URL=https://search-cicd.oss-cn-hangzhou-zmf.aliyuncs.com/third_party_archives/bazel_binary
+start env GIT_EDITOR=true
+start env IDE_SERVER_PATH=/cloudide
+start env CLOUDIDE_ENV=Dev Studio
+start env NVIDIA_VISIBLE_DEVICES=
+start env IDE_ROUTER_DOMAIN=cloud-ide.alibaba-inc.com
+start env pouch_container_id=7beebb8644f7fb28f8f787f45c52b07bed26f728f560b27a5769dd1a4427ac41
+start env which_declare=declare -f
+start env BONES_EYE=x
+start env KUBERNETES_PORT_443_TCP_PROTO=tcp
+start env KUBERNETES_PORT_443_TCP_ADDR=192.168.0.1
+start env container=docker
+start env CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER=1
+start env MODULES_CMD=/usr/share/Modules/libexec/modulecmd.tcl
+start env PIP_INDEX_URL=https://artlab.alibaba-inc.com/1/PYPI/simple/
+start env USER=root
+start env CLAUDE_CODE_EXECPATH=/root/.nvm/versions/node/v22.22.2/lib/node_modules/@ali/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+start env KUBERNETES_PORT=tcp://192.168.0.1:443
+start env SEARCH_ENDPOINT=
+start env PWD=/root/wenhua_code/rtp-test
+start env HOME=/root
+start env CMAKE_PREFIX_PATH=/opt/rocm-6.4.1/lib/cmake:
+start env KUBERNETES_SERVICE_PORT_HTTPS=443
+start env CONDA_AUTO_UPDATE_CONDA=false
+start env COREPACK_ENABLE_AUTO_PIN=0
+start env DEBIAN_FRONTEND=noninteractive
+start env CLAUDECODE=1
+start env NOFILE_HARD_LIMIT=655350
+start env CLAUDE_CODE_ENTRYPOINT=cli
+start env KUBERNETES_PORT_443_TCP_PORT=443
+start env STARAGENT_HOME=/home/staragent
+start env GLIBC_TUNABLES=glibc.cpu.hwcaps=-avx_512
+start env EXT_MODE=js
+start env ANTHROPIC_BASE_URL=https://idealab.alibaba-inc.com/api/code
+start env RequestedIP=33.243.231.26
+start env SUPERVISOR_PROCESS_NAME=devstudio
+start env LOADEDMODULES=
+start env SUPERVISOR_ENABLED=1
+start env WEB_FETCH_API_KEY=
+start env KUBERNETES_PORT_443_TCP=tcp://192.168.0.1:443
+start env MAIL=/var/spool/mail/root
+start env NODE_BINARY_PATH=
+start env VSCODE_PID=25
+start env BONES_RARITY=legendary
+start env SHELL=/bin/bash
+start env TERM=xterm
+start env RACK_ID=
+start env ROCM_HOME=/opt/rocm-6.4.1
+start env NVM_BIN=/root/.nvm/versions/node/v22.22.2/bin
+start env DISABLE_TELEMETRY=1
+start env BONES_HAT=none
+start env SIGMA_APP_STAGE=PUBLISH
+start env DISABLE_ERROR_REPORTING=1
+start env CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
+start env OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta
+start env SHLVL=2
+start env MANPATH=/root/.nvm/versions/node/v22.22.2/share/man::
+start env KUBERNETES_SERVICE_PORT=443
+start env DefaultRoute=33.243.255.253
+start env pouch_container_image=hub.docker.alibaba-inc.com/aone-mlflow/custom-image-tre-aidev:wenhua-rtp-227
+start env SUPERVISOR_GROUP_NAME=devstudio
+start env MODULEPATH=/etc/scl/modulefiles:/usr/share/Modules/modulefiles:/etc/modulefiles:/usr/share/modulefiles
+start env ANTHROPIC_API_KEY=ea2930da34c9cc5276988984b7677001
+start env SIGMA_APP_SITE=cm10
+start env LOGNAME=root
+start env CPLUS_INCLUDE_PATH=/opt/rocm-6.4.1/include:
+start env MODULEPATH_modshare=/usr/share/Modules/modulefiles:2:/etc/modulefiles:2:/usr/share/modulefiles:2
+start env PATH=/root/.nvm/versions/node/v22.22.2/bin:/root/.opencode/bin:/opt/rocm-6.4.1/bin:/root/.nvm/versions/node/v22.22.2/bin:/root/.opencode/bin:/opt/rocm-6.4.1/bin:/root/.nvm/versions/node/v22.22.2/bin:/root/.nvm/versions/node/v22.22.2/bin:/root/.opencode/bin:/opt/rocm-6.4.1/bin:/opt/rh/gcc-toolset-12/root/usr/bin:/opt/rocm-6.4.1/bin:/opt/cmake/cmake-3.26.4/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/conda310/bin:/opt/rocm/bin:/usr/share/Modules/bin:/opt/rh/gcc-toolset-12/root/usr/bin:/opt/rocm-6.4.1/bin:/opt/cmake/cmake-3.26.4/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/conda310/bin:/opt/rocm/bin:/usr/local/conda/bin:/usr/local/conda/condabin:/root/.local/bin:/usr/local/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/jvm/java-8-openjdk-amd64/bin:/opt/taobao/install/apache-maven-3.8.8/bin:/opt/taobao/install/gradle-5.6.3/bin:/usr/X11R6/bin
+start env K8S_CONTAINER_NAME=dev
+start env SUPERVISOR_SERVER_URL=unix:///tmp/supervisor.sock
+start env STARAGENT_PLUGINS=/home/staragent/plugins
+start env MODULESHOME=/usr/share/Modules
+start env TERMINAL_SERVER_PORT=50991
+start env NVM_INC=/root/.nvm/versions/node/v22.22.2/include/node
+start env BAZELISK_HOME=/opt/bazelisk
+start env HISTSIZE=1000
+start env SIGMA_APP_UNIT=CENTER_UNIT.center
+start env KUBERNETES_SERVICE_HOST=192.168.0.1
+start env spas_secretKey=KFDqoMIKUUQ7icX0YPLltu3eLhk=
+start env RUN_AS_IDE_SIDECAR=1
+start env ANTHROPIC_AUTH_TOKEN=ea2930da34c9cc5276988984b7677001
+start env XPU_VISIBLE_DEVICES=4,0,1,2,3,5,6,7
+start env LESSOPEN=||/usr/bin/lesspipe.sh %s
+start env BASH_FUNC_which%%=() {  ( alias;
+ eval ${which_declare} ) | /usr/bin/which --tty-only --read-alias --read-functions --show-tilde --show-dot $@
+}
+start env BASH_FUNC_module%%=() {  unset _mlshdbg;
+ if [ "${MODULES_SILENT_SHELL_DEBUG:-0}" = '1' ]; then
+ case "$-" in
+ *v*x*)
+ set +vx;
+ _mlshdbg='vx'
+ ;;
+ *v*)
+ set +v;
+ _mlshdbg='v'
+ ;;
+ *x*)
+ set +x;
+ _mlshdbg='x'
+ ;;
+ *)
+ _mlshdbg=''
+ ;;
+ esac;
+ fi;
+ unset _mlre _mlIFS;
+ if [ -n "${IFS+x}" ]; then
+ _mlIFS=$IFS;
+ fi;
+ IFS=' ';
+ for _mlv in ${MODULES_RUN_QUARANTINE:-};
+ do
+ if [ "${_mlv}" = "${_mlv##*[!A-Za-z0-9_]}" -a "${_mlv}" = "${_mlv#[0-9]}" ]; then
+ if [ -n "`eval 'echo ${'$_mlv'+x}'`" ]; then
+ _mlre="${_mlre:-}${_mlv}_modquar='`eval 'echo ${'$_mlv'}'`' ";
+ fi;
+ _mlrv="MODULES_RUNENV_${_mlv}";
+ _mlre="${_mlre:-}${_mlv}='`eval 'echo ${'$_mlrv':-}'`' ";
+ fi;
+ done;
+ if [ -n "${_mlre:-}" ]; then
+ eval `eval ${_mlre} /usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash '"$@"'`;
+ else
+ eval `/usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash "$@"`;
+ fi;
+ _mlstatus=$?;
+ if [ -n "${_mlIFS+x}" ]; then
+ IFS=$_mlIFS;
+ else
+ unset IFS;
+ fi;
+ unset _mlre _mlv _mlrv _mlIFS;
+ if [ -n "${_mlshdbg:-}" ]; then
+ set -$_mlshdbg;
+ fi;
+ unset _mlshdbg;
+ return $_mlstatus
+}
+start env BASH_FUNC__module_raw%%=() {  unset _mlshdbg;
+ if [ "${MODULES_SILENT_SHELL_DEBUG:-0}" = '1' ]; then
+ case "$-" in
+ *v*x*)
+ set +vx;
+ _mlshdbg='vx'
+ ;;
+ *v*)
+ set +v;
+ _mlshdbg='v'
+ ;;
+ *x*)
+ set +x;
+ _mlshdbg='x'
+ ;;
+ *)
+ _mlshdbg=''
+ ;;
+ esac;
+ fi;
+ unset _mlre _mlIFS;
+ if [ -n "${IFS+x}" ]; then
+ _mlIFS=$IFS;
+ fi;
+ IFS=' ';
+ for _mlv in ${MODULES_RUN_QUARANTINE:-};
+ do
+ if [ "${_mlv}" = "${_mlv##*[!A-Za-z0-9_]}" -a "${_mlv}" = "${_mlv#[0-9]}" ]; then
+ if [ -n "`eval 'echo ${'$_mlv'+x}'`" ]; then
+ _mlre="${_mlre:-}${_mlv}_modquar='`eval 'echo ${'$_mlv'}'`' ";
+ fi;
+ _mlrv="MODULES_RUNENV_${_mlv}";
+ _mlre="${_mlre:-}${_mlv}='`eval 'echo ${'$_mlrv':-}'`' ";
+ fi;
+ done;
+ if [ -n "${_mlre:-}" ]; then
+ eval `eval ${_mlre} /usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash '"$@"'`;
+ else
+ eval `/usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash "$@"`;
+ fi;
+ _mlstatus=$?;
+ if [ -n "${_mlIFS+x}" ]; then
+ IFS=$_mlIFS;
+ else
+ unset IFS;
+ fi;
+ unset _mlre _mlv _mlrv _mlIFS;
+ if [ -n "${_mlshdbg:-}" ]; then
+ set -$_mlshdbg;
+ fi;
+ unset _mlshdbg;
+ return $_mlstatus
+}
+start env BASH_FUNC_switchml%%=() {  typeset swfound=1;
+ if [ "${MODULES_USE_COMPAT_VERSION:-0}" = '1' ]; then
+ typeset swname='main';
+ if [ -e /usr/share/Modules/libexec/modulecmd.tcl ]; then
+ typeset swfound=0;
+ unset MODULES_USE_COMPAT_VERSION;
+ fi;
+ else
+ typeset swname='compatibility';
+ if [ -e /usr/share/Modules/libexec/modulecmd-compat ]; then
+ typeset swfound=0;
+ MODULES_USE_COMPAT_VERSION=1;
+ export MODULES_USE_COMPAT_VERSION;
+ fi;
+ fi;
+ if [ $swfound -eq 0 ]; then
+ echo "Switching to Modules $swname version";
+ source /usr/share/Modules/init/bash;
+ else
+ echo "Cannot switch to Modules $swname version, command not found";
+ return 1;
+ fi
+}
+start env BASH_FUNC_scl%%=() {  if [ "$1" = "load" -o "$1" = "unload" ]; then
+ eval "module $@";
+ else
+ /usr/bin/scl "$@";
+ fi
+}
+start env BASH_FUNC_ml%%=() {  module ml "$@"
+}
+start env _=/usr/local/bin/python
+initilize tokenizer [/root/Qwen3.5-9B/] done.
+test length: 15000, concurrency: 1, output length: 500
+total requests: 1, succces requests: 1, fail requests: 0
+avg input len: 15367.0, avg output len: 500.0
+avg wait time: 0.163000 ms, max wait time: 0.163000 ms
+avg total time: 5586.886000 ms, max total time: 5586.886000 ms
+avg prefill time: 2565.222000 ms, max prefill time: 2565.222000 ms, var: 0.000000
+avg decode time: 6.055439 ms, max decode time: 6.055439 ms, var: 0.000000
+============================================================================================================
+request done.
