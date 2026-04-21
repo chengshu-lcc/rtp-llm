@@ -92,18 +92,21 @@ DP_SIZE=1 python benchmark.py
 | **N4** | AllReduce → aiter `allreduce_prototype_twoshot` | ⏳ TODO（环境变量 flip + 验证） | ~10.7 ms | — | [n4_aiter_allreduce_twoshot/](./n4_aiter_allreduce_twoshot/optimization_checkpoint.md) |
 | **N5** | GDN `_causal_conv1d_fwd_kernel` → `_split_kernel` | ⏳ TODO | ~2.0 ms | — | [n5_causal_conv1d_split/](./n5_causal_conv1d_split/optimization_checkpoint.md) |
 | **N6** | GDN `chunk_scaled_dot_kkt + chunk_local_cumsum` 融合 | ⏳ TODO（依赖 N3） | ~0.6 ms (净) | — | [n6_fused_cumsum_kkt/](./n6_fused_cumsum_kkt/optimization_checkpoint.md) |
-| **N7** | Full-Attn `add_fusedQKV_bias_transpose_prefill_kernel_v1` 去 dead writes | ⚠️ WIP commit `6075b5b8b`，**timeline 显示未生效**，待 DEBUG LOG 二次定位 | ~25 ms | 0（patch 等同未生效） | [n7_dead_qkv_writes/](./n7_dead_qkv_writes/optimization_checkpoint.md) |
+| **N7** | Full-Attn `add_fusedQKV_bias_transpose_prefill_kernel_v1` 去 dead writes | ❌ PATCH 落死代码（`LOAD_PYTHON_MODEL=1` 走 `FusedRopeKVCacheOp.cc` 不走 `ROCmAttentionOp.cc`）；建议 revert `6075b5b8b`，按 sub-checkpoint §10 重做 | ~25 ms（v1 kernel 总耗时上限）/ 实际可省取决于路径 (c) | 0 | [n7_dead_qkv_writes/](./n7_dead_qkv_writes/optimization_checkpoint.md) |
 | **N8** | Fold `store_ssm_state_to_block_map` + `load_initial_state_from_block_map` 进 chunk_o 尾段 | ⏳ TODO | ~0.5 ms | — | [n8_fold_ssm_state/](./n8_fold_ssm_state/optimization_checkpoint.md) |
 | **N9** | Full-Attn `sigmoid_kernel + mul` → fused `_fused_sigmoid_mul_kernel` | ⏳ TODO | ~0.1 ms | — | [n9_fused_sigmoid_mul/](./n9_fused_sigmoid_mul/optimization_checkpoint.md) |
 | **N10** | GDN `_layer_norm_fwd_1pass_kernel` 重新 autotune | ⏳ TODO（autotune cache rebuild） | ~1.9 ms | — | [n10_layernorm_autotune/](./n10_layernorm_autotune/optimization_checkpoint.md) |
 | **N11** | GDN `chunk_fwd_kernel_o` 重新 autotune | ⏳ TODO（autotune cache rebuild） | ~4.8 ms | — | [n11_chunk_fwd_o_autotune/](./n11_chunk_fwd_o_autotune/optimization_checkpoint.md) |
+| **N12** | 消除 Python-side `tensor.contiguous() / .to()` 复制（attention path）| ✅ Done (Plan A+B+C, 2026-04-21) | ~2.5–3.5 ms | **−3 ms**（A 单独贡献，B+C 在波动内 ≈ 0） | C++ RoPE op 直出 packed K/V `[total_kv_tokens, Hkv, D]`（替代 padded `[B, Hkv, T+prefix, D]`），Python 侧砍掉 per-batch unpad+`.contiguous()`+`torch.cat`；同时让 `FMHAParams` 直接复用 `attn_inputs.cu_seqlens` 取消 HtoD；删除调试 print |
+| **N14** | RTP 用 5 种 GEMM tile shape，SGL 只用 1 种 | ⏳ RESEARCH（架构性） | ~3–5 ms | — | 详见 addendum §B.3。`MT256x96x64`/`MT256x160x32`/`MT192x128x64`/`MT256x80x64`/`MT32x224x128` vs SGL 单一 `MT256x96x64`。需改 rocBLAS dispatch 或权重 layout |
 
-**估算合计**：N1–N11 ≈ **70 ms** ≈ RTP vs SGL 全部 gap。
+**估算合计**：N1–N12 ≈ **76 ms**（N9 修正 0.1→0.55 ms + 新增 N12 ~3 ms），仍约等于 RTP vs SGL 70 ms gap（含小幅重叠）。N14 留作 P3 研究项。
 
 **目前已实拿**：
 - N1 实测 −17.5 ms（perf_test prefill_time 931→914 ms）
 - N2 单 kernel 实测 17× 加速（端到端待测）
 - N3 实测 −2.25 ms（perf_test prefill_time 914→911 ms）；估算与实测都偏小，N3+N6 一起做才能拿满 9.1 ms
+- N12 实测 −3 ms（perf_test prefill_time 911→908 ms，3 次中位数）；A/B/C 拆分：A (packed K/V) 贡献 ~2.9 ms，B+C 在 ±2 ms 单次波动内不可分辨
 - 其它 0 / 待测 / WIP
 
 ---
@@ -124,13 +127,14 @@ DP_SIZE=1 python benchmark.py
 
 | 优先级 | 项目 | 难度 | 预期收益 | 备注 |
 |---|---|---|---:|---|
-| P0-1 | N7 DEBUG LOG 验证 | 低（10 分钟决断） | ~25 ms（如果根因被 unblock） | 已有 patch + LOG，差读 LOG |
-| P0-2 | N3 移植 `_fused_merge_recompute_kernel` | 中 | ~9.1 ms | 从 FLA upstream port |
-| P1-3 | N4 aiter twoshot allreduce | 低（env flip + 跑回归） | ~10.7 ms | 需要 8GPU 上验证更明显 |
-| P1-4 | N11 重 autotune `chunk_fwd_kernel_o` | 低 | ~4.8 ms | 同 Triton kernel，差 config |
-| P1-5 | N5 移植 `_causal_conv1d_fwd_split_kernel` | 中 | ~2.0 ms | drop-in |
+| P0-1 | N4 aiter twoshot allreduce | 低（env flip + 跑回归） | ~10.7 ms | 需要 8GPU 上验证更明显 |
+| P0-2 | N11 重 autotune `chunk_fwd_kernel_o` | 低 | ~4.8 ms | 同 Triton kernel，差 config |
+| P1-3 | N7 重新选向（§10 candidate (c) paged prefill 给 nocache） | 高 | ~25 ms（仅 (c)/(d) 候选） | 死代码 patch 已确认无效；需 micro-bench paged prefill 在 nocache 长 query 上的精度+速度 |
+| P1-4 | N5 移植 `_causal_conv1d_fwd_split_kernel` | 中 | ~2.0 ms | drop-in |
+| ~~P1-5~~ | ~~**N12** 消 Python `.contiguous()/.to()` 复制~~ | ~~中~~ | ✅ Done −3 ms | Plan A (packed K/V from C++ RoPE op) 贡献 ~2.9 ms；B+C 在波动内 |
 | P2-6 | N10 重 autotune `_layer_norm_fwd_1pass_kernel` | 低 | ~1.9 ms | 同 Triton kernel |
-| P2-7 | N6 / N8 / N9 | 低/小 | 合计 ~1 ms | 顺手做 |
+| P2-7 | N6 / N8 / N9 | 低/小 | 合计 ~1.6 ms（N9 修正 0.55 ms） | 顺手做 |
+| P3-8 | **N14** 收敛 GEMM tile shapes | 高（架构性） | ~3–5 ms | 5 shapes → 1，需改 rocBLAS dispatch |
 
 ---
 

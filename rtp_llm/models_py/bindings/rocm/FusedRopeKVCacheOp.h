@@ -20,6 +20,11 @@ public:
 
     bool use_paged_fmha = false;  // When true, output Q as [total_tokens, heads, dim] and skip prefix KV copy
     bool pad_query = false;
+    // When true, output K/V as packed [total_kv_tokens, num_kv_heads, head_dim]
+    // instead of padded [batch, num_kv_heads, max_seqlen_k, head_dim]. Caller must
+    // ensure prefix == 0 (NonAsm path is the intended user; AiterPrefillImplPaged
+    // owns prefix > 0 and routes through ASM).
+    bool packed_kv = false;
 
 protected:
     AttentionConfigs attn_configs_;

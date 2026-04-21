@@ -841,6 +841,7 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
                     store_q,
                     store_kv,
                     store_cache,
+                    false,
                     rope_cache.used && rope_cache.data.defined() ? static_cast<float2*>(rope_cache.data.data_ptr()) :
                                                                    nullptr,
                     stream_);

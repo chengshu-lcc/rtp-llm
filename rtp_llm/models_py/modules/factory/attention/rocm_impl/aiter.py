@@ -50,28 +50,40 @@ class FMHAParams(ParamsBase):
             self.max_seq_len = input_lengths.max().item()
             batch_size = input_lengths.size(0)
 
-            # Create cu_seqlens_q for query (based on input_lengths only)
-            self.cu_seqlens_q = torch.zeros(
-                batch_size + 1, dtype=torch.int32, device=input_lengths.device
-            )
-            self.cu_seqlens_q[1:] = torch.cumsum(input_lengths, 0)
+            # Prefer device-resident cu_seqlens published by PyWrappedModel; fall back
+            # to legacy CPU cumsum for callers that don't set them. This avoids the
+            # per-layer HtoD copy of cu_seqlens_q/k seen in profiler traces.
+            cu_seqlens_q_d = getattr(attn_inputs, "cu_seqlens", None)
+            cu_kv_seqlens_d = getattr(attn_inputs, "cu_kv_seqlens", None)
 
-            # Create cu_seqlens_k for key/value (includes prefix_lengths)
-            if prefix_lengths is not None and prefix_lengths.numel() > 0:
-                kv_lengths = input_lengths + prefix_lengths
-                self.cu_seqlens_k = torch.zeros(
+            if cu_seqlens_q_d is not None and cu_seqlens_q_d.is_cuda:
+                self.cu_seqlens_q = cu_seqlens_q_d
+            else:
+                self.cu_seqlens_q = torch.zeros(
                     batch_size + 1, dtype=torch.int32, device=input_lengths.device
                 )
-                self.cu_seqlens_k[1:] = torch.cumsum(kv_lengths, 0)
+                self.cu_seqlens_q[1:] = torch.cumsum(input_lengths, 0)
+
+            if prefix_lengths is not None and prefix_lengths.numel() > 0:
+                if cu_kv_seqlens_d is not None and cu_kv_seqlens_d.is_cuda:
+                    self.cu_seqlens_k = cu_kv_seqlens_d
+                    kv_lengths = input_lengths + prefix_lengths
+                else:
+                    kv_lengths = input_lengths + prefix_lengths
+                    self.cu_seqlens_k = torch.zeros(
+                        batch_size + 1, dtype=torch.int32, device=input_lengths.device
+                    )
+                    self.cu_seqlens_k[1:] = torch.cumsum(kv_lengths, 0)
                 # Calculate max sequence length including prefix
                 max_prefix_length = (
                     prefix_lengths.max().item() if prefix_lengths.numel() > 0 else 0
                 )
                 self.max_seqlen_k = self.max_seq_len + max_prefix_length
             else:
-                # No prefix, kv_lengths equals input_lengths
+                # No prefix, kv_lengths equals input_lengths; reuse cu_seqlens_q tensor
+                # (read-only input to flash_attn_varlen_func, safe to alias).
                 kv_lengths = input_lengths
-                self.cu_seqlens_k = self.cu_seqlens_q.clone()
+                self.cu_seqlens_k = self.cu_seqlens_q
                 self.max_seqlen_k = self.max_seq_len
 
             self.max_seqlen_q = self.max_seq_len
@@ -145,13 +157,21 @@ class FMHAParams(ParamsBase):
 
 
 class AiterPrefillAttnOp:
-    def __init__(self, attn_configs: AttentionConfigs, v1_kv_layout: bool = False):
+    def __init__(
+        self,
+        attn_configs: AttentionConfigs,
+        v1_kv_layout: bool = False,
+        packed_kv: bool = False,
+    ):
         self.head_num = attn_configs.head_num
         self.head_dim = attn_configs.size_per_head
         self.head_num_kv = attn_configs.kv_head_num
         self.tokens_per_block = attn_configs.kernel_tokens_per_block
         self.is_causal = attn_configs.is_causal
         self.v1_kv_layout = v1_kv_layout
+        # When True, the C++ RoPE op already returns K/V as packed
+        # [total_kv_tokens, Hkv, D]; skip the per-batch unpad+contiguous loop.
+        self.packed_kv = packed_kv
 
     def support(self, attn_inputs: PyAttentionInputs) -> bool:
         return True
@@ -284,30 +304,33 @@ class AiterPrefillAttnOp:
 
         # Use flash_attn_varlen_func with K/V from C++ RoPE output.
         # qkv is a tuple: (q_output, k_output, v_output) from FusedRopeKVCachePrefillOp.
-        # k_output/v_output shape: [batch_size, num_kv_heads, max_seqlen_k, head_dim]
-        k_padded = qkv[1]
-        v_padded = qkv[2]
-
         cu_seqlens_q = fmha_params.cu_seqlens_q.to(q_tensor.device)
         cu_seqlens_k = fmha_params.cu_seqlens_k.to(q_tensor.device)
 
-        # Unpad K/V from [batch_size, num_kv_heads, max_seqlen_k, head_dim]
-        # to packed [total_kv_tokens, num_kv_heads, head_dim]
-        batch_size = cu_seqlens_q.shape[0] - 1
-        kv_lengths = (cu_seqlens_k[1:] - cu_seqlens_k[:-1]).cpu()
-        key_packed_list = []
-        value_packed_list = []
-        for i in range(batch_size):
-            seq_len_i = kv_lengths[i].item()
-            key_packed_list.append(
-                k_padded[i, :, :seq_len_i, :].transpose(0, 1).contiguous()
-            )
-            value_packed_list.append(
-                v_padded[i, :, :seq_len_i, :].transpose(0, 1).contiguous()
-            )
-        key_packed = torch.cat(key_packed_list, dim=0)
-        value_packed = torch.cat(value_packed_list, dim=0)
-        print("flash attn varlen func----------",flush=True)
+        if self.packed_kv:
+            # Fast path: C++ already wrote K/V as packed [total_kv_tokens, Hkv, D].
+            # Skip the per-batch .cpu()/.item()/.contiguous() loop and torch.cat.
+            key_packed = qkv[1]
+            value_packed = qkv[2]
+        else:
+            # Legacy padded path: K/V is [batch, Hkv, max_seqlen_k, D]; unpad per-batch.
+            k_padded = qkv[1]
+            v_padded = qkv[2]
+            batch_size = cu_seqlens_q.shape[0] - 1
+            kv_lengths = (cu_seqlens_k[1:] - cu_seqlens_k[:-1]).cpu()
+            key_packed_list = []
+            value_packed_list = []
+            for i in range(batch_size):
+                seq_len_i = kv_lengths[i].item()
+                key_packed_list.append(
+                    k_padded[i, :, :seq_len_i, :].transpose(0, 1).contiguous()
+                )
+                value_packed_list.append(
+                    v_padded[i, :, :seq_len_i, :].transpose(0, 1).contiguous()
+                )
+            key_packed = torch.cat(key_packed_list, dim=0)
+            value_packed = torch.cat(value_packed_list, dim=0)
+
         res = aiter.flash_attn_varlen_func(
             q_tensor,
             key_packed,
@@ -919,8 +942,9 @@ class AiterPrefillImplNonAsm(FMHAImplBase):
     ) -> None:
         # Create implementations
         self.need_rope_kv_cache = attn_configs.need_rope_kv_cache
-        self.fmha_impl = AiterPrefillAttnOp(attn_configs, v1_kv_layout=True)
+        self.fmha_impl = AiterPrefillAttnOp(attn_configs, v1_kv_layout=True, packed_kv=True)
         self.rope_kvcache_impl = FusedRopeKVCachePrefillOpNonAsm(attn_configs)
+        self.rope_kvcache_impl.packed_kv = True
 
         # Store input info
         self.attn_inputs = attn_inputs
