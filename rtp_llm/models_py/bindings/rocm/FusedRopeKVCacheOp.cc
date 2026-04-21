@@ -100,6 +100,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> FusedRopeKVCachePrefillO
     }
     const int seq_len_with_prefix = seq_len + max_prefix_length;
 
+    // packed_kv layout assumes prefix == 0 (cu_seqlens equals cu_kv_seqlens). The
+    // packed offset (pre_len + dst_kv_seq_idx) computed in the v1 kernel only matches
+    // the global token index when there is no prefix.
+    RTP_LLM_CHECK_WITH_INFO(
+        !packed_kv || max_prefix_length == 0,
+        "FusedRopeKVCachePrefillOp: packed_kv layout does not support prefix > 0");
+
     const int     q_output_token_num = (use_paged_fmha && pad_query) ? batch_size * seq_len : token_num;
     const bool    paged_fp8          = use_paged_fmha && attn_configs_.kv_cache_dtype == KvCacheDataType::FP8;
     torch::Tensor q_output           = torch::zeros({q_output_token_num, local_head_num, size_per_head},
@@ -109,10 +116,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> FusedRopeKVCachePrefillO
         q_fp8_buf = torch::empty({q_output_token_num, local_head_num, size_per_head},
                                  torch::TensorOptions(get_fp8_dtype(device_)).device(qkv.device()));
     }
-    torch::Tensor k_output = torch::zeros({batch_size, local_head_num_kv, seq_len_with_prefix, size_per_head},
-                                          torch::TensorOptions(qkv.dtype()).device(qkv.device()));
-    torch::Tensor v_output = torch::zeros({batch_size, local_head_num_kv, seq_len_with_prefix, size_per_head},
-                                          torch::TensorOptions(qkv.dtype()).device(qkv.device()));
+    torch::Tensor k_output, v_output;
+    if (packed_kv) {
+        // Packed [total_kv_tokens, Hkv, D]. With prefix == 0, total_kv_tokens == token_num.
+        // Use empty (not zeros) — the v1 kernel writes every (token, head<Hkv, d) slot,
+        // so pre-zeroing is wasted memset bandwidth.
+        k_output = torch::empty({token_num, local_head_num_kv, size_per_head},
+                                torch::TensorOptions(qkv.dtype()).device(qkv.device()));
+        v_output = torch::empty({token_num, local_head_num_kv, size_per_head},
+                                torch::TensorOptions(qkv.dtype()).device(qkv.device()));
+    } else {
+        k_output = torch::zeros({batch_size, local_head_num_kv, seq_len_with_prefix, size_per_head},
+                                torch::TensorOptions(qkv.dtype()).device(qkv.device()));
+        v_output = torch::zeros({batch_size, local_head_num_kv, seq_len_with_prefix, size_per_head},
+                                torch::TensorOptions(qkv.dtype()).device(qkv.device()));
+    }
 
     PrefixPromptBatchWeightsParam prefix_prompt_param{};
     bool                          use_fmha_fp8 = false;
@@ -237,6 +255,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> FusedRopeKVCachePrefillO
                                          store_q,
                                          store_kv,
                                          store_cache,
+                                         packed_kv,
                                          nullptr,
                                          stream_);
     }
@@ -430,6 +449,7 @@ void registerFusedRopeKVCacheOp(const py::module& m) {
         .def(pybind11::init<const AttentionConfigs&>(), py::arg("attn_configs"))
         .def_readwrite("use_paged_fmha", &FusedRopeKVCachePrefillOpAsm::use_paged_fmha)
         .def_readwrite("pad_query", &FusedRopeKVCachePrefillOpAsm::pad_query)
+        .def_readwrite("packed_kv", &FusedRopeKVCachePrefillOpAsm::packed_kv)
         .def("prepare", &FusedRopeKVCachePrefillOpAsm::prepare, py::arg("attn_inputs"))
         .def("forward", &FusedRopeKVCachePrefillOpAsm::forward, py::arg("qkv"), py::arg("kv_cache"), py::arg("params"));
 
@@ -438,6 +458,7 @@ void registerFusedRopeKVCacheOp(const py::module& m) {
         .def(pybind11::init<const AttentionConfigs&>(), py::arg("attn_configs"))
         .def_readwrite("use_paged_fmha", &FusedRopeKVCachePrefillOpNonAsm::use_paged_fmha)
         .def_readwrite("pad_query", &FusedRopeKVCachePrefillOpNonAsm::pad_query)
+        .def_readwrite("packed_kv", &FusedRopeKVCachePrefillOpNonAsm::packed_kv)
         .def("prepare", &FusedRopeKVCachePrefillOpNonAsm::prepare, py::arg("attn_inputs"))
         .def("forward",
              &FusedRopeKVCachePrefillOpNonAsm::forward,

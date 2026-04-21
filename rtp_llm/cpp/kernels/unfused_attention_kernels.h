@@ -171,6 +171,7 @@ void invokeAddFusedQKVBiasTransposePrefillV1(T*                             q_bu
                                              const bool                     store_q,
                                              const bool                     store_kv,
                                              const bool                     store_cache,
+                                             const bool                     packed_kv,
                                              const float2*                  cos_sin_cache,
                                              cudaStream_t                   stream);
 
