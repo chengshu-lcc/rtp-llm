@@ -612,19 +612,6 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
     auto kv_head_num   = params.configs.kv_head_num;
     auto size_per_head = params.configs.size_per_head;
 
-    auto q_output =
-        use_mtp_pa_ ?
-            allocateBuffer({params.input.type(), {token_num, head_num, size_per_head}, AllocationType::DEVICE},
-                           {"q_output"}) :
-            allocateBuffer(
-                {params.input.type(), {batch_size, head_num, seq_len, size_per_head}, AllocationType::DEVICE},
-                {"q_output"});
-    auto k_output = allocateBuffer(
-        {params.input.type(), {batch_size, kv_head_num, seq_len_with_prefix, size_per_head}, AllocationType::DEVICE},
-        {"k_output"});
-    auto v_output = allocateBuffer(
-        {params.input.type(), {batch_size, kv_head_num, seq_len_with_prefix, size_per_head}, AllocationType::DEVICE},
-        {"v_output"});
     BufferPtr kv_cache_block_id = nullptr;
 
     KVBlockArray                  kv_block_array;
@@ -649,6 +636,50 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
         }
         use_fmha_fp8 = kv_block_array.cache_type == KvCacheDataType::FP8;
     }
+
+    // q_output/k_output/v_output are only consumed by:
+    //   (a) use_mtp_pa_ -> runTritonPA / runHipPA reads q_output
+    //   (b) prefix-prompt path (max_prefix_prompt_length > 0 && !use_mtp_pa_)
+    //       -> invokeLoadPrefixKVCache* writes them and invokeGatherSequencesCombined reads them
+    // The runCKFmha branch reads Q/K/V directly from params.input (in-place RoPE'd by store_qkv),
+    // so allocating + writing these padded buffers there is dead bytes (~480 us / layer on 15k prefill).
+    const bool needs_padded_qkv = prefix_prompt_param.max_prefix_prompt_length > 0 && !use_mtp_pa_;
+    {
+        static FILE* _dbg_fp = fopen("/tmp/dead_qkv_debug.log", "a");
+        if (_dbg_fp) {
+            fprintf(_dbg_fp,
+                    "[DEAD_QKV_DEBUG] needs_padded_qkv=%d max_prefix_prompt_length=%d use_mtp_pa_=%d "
+                    "prefix_prompt_lengths_ptr=%p batch_size=%d seq_len=%d token_num=%d\n",
+                    (int)needs_padded_qkv,
+                    prefix_prompt_param.max_prefix_prompt_length,
+                    (int)use_mtp_pa_,
+                    (void*)(params.common.prefix_prompt_lengths ? params.common.prefix_prompt_lengths.get() : nullptr),
+                    (int)batch_size,
+                    (int)seq_len,
+                    (int)token_num);
+            fflush(_dbg_fp);
+        }
+    }
+    BufferPtr q_output, k_output, v_output;
+    if (use_mtp_pa_) {
+        q_output = allocateBuffer({params.input.type(), {token_num, head_num, size_per_head}, AllocationType::DEVICE},
+                                  {"q_output"});
+    } else if (needs_padded_qkv) {
+        q_output = allocateBuffer(
+            {params.input.type(), {batch_size, head_num, seq_len, size_per_head}, AllocationType::DEVICE},
+            {"q_output"});
+    }
+    if (needs_padded_qkv) {
+        k_output = allocateBuffer({params.input.type(),
+                                   {batch_size, kv_head_num, seq_len_with_prefix, size_per_head},
+                                   AllocationType::DEVICE},
+                                  {"k_output"});
+        v_output = allocateBuffer({params.input.type(),
+                                   {batch_size, kv_head_num, seq_len_with_prefix, size_per_head},
+                                   AllocationType::DEVICE},
+                                  {"v_output"});
+    }
+
     printBufferData(*params.common.input_lengths, "input_lengths");
     if (params.common.cu_seqlens) {
         printBufferData(*params.common.cu_seqlens, "cu_seqlens");
@@ -721,10 +752,15 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
         }
     }
 
-    bool store_qkv   = !use_mtp_pa_;
-    bool store_q     = true;
-    bool store_kv    = !use_mtp_pa_;
-    bool store_cache = params.common.kv_cache.has_value();
+    bool store_qkv = !use_mtp_pa_;
+    // store_q only true when q_output is alive (mtp_pa or prefix-prompt path);
+    // store_kv only true when k_output/v_output are alive (prefix-prompt path).
+    bool  store_q     = use_mtp_pa_ || needs_padded_qkv;
+    bool  store_kv    = needs_padded_qkv;
+    bool  store_cache = params.common.kv_cache.has_value();
+    void* q_buf_data  = q_output ? q_output->data() : nullptr;
+    void* k_buf_data  = k_output ? k_output->data() : nullptr;
+    void* v_buf_data  = v_output ? v_output->data() : nullptr;
 
     // if all condition satisfy, no need to do invokeAddFusedQKVBiasTranspose
     bool skip_add_bias_transpose = (params.configs.rope_config.style == RopeStyle::No && !params.common.kv_cache
@@ -739,9 +775,9 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
                 DISPATCH_CUDA_FUNCTION_DATA_TYPE(
                     datatype,
                     invokeAddFusedQKVBiasTransposePrefill,
-                    q_output->data(),
-                    k_output->data(),
-                    v_output->data(),
+                    q_buf_data,
+                    k_buf_data,
+                    v_buf_data,
                     &prefix_prompt_param,
                     params.input.data(),
                     qkv_buf_fp8 ? qkv_buf_fp8->data() : nullptr,
@@ -776,9 +812,9 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
                 DISPATCH_CUDA_FUNCTION_DATA_TYPE(
                     datatype,
                     invokeAddFusedQKVBiasTransposePrefillV1,
-                    q_output->data(),
-                    k_output->data(),
-                    v_output->data(),
+                    q_buf_data,
+                    k_buf_data,
+                    v_buf_data,
                     &prefix_prompt_param,
                     params.input.data(),
                     nullptr,
@@ -815,9 +851,9 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
                 datatype,
                 invokeAddFusedQKVBiasTranspose,
                 nullptr,
-                q_output->data(),
-                k_output->data(),
-                v_output->data(),
+                q_buf_data,
+                k_buf_data,
+                v_buf_data,
                 &prefix_prompt_param,
                 params.input.data(),
                 nullptr,
@@ -874,21 +910,24 @@ AttentionModuleOutput ROCmDevice::contextAttention(const AttentionModuleParams& 
             datatype, params.configs.is_causal, head_num, kv_head_num, size_per_head, params.configs.q_scaling);
     }
 
-    printBufferData(*q_output, "q_output");
-    // printBufferData(*k_output, "k_output");
-    // printBufferData(*v_output, "v_output");
-    // if (v_output->shape()[0]>1) {
-    //     printBufferData(*(v_output->index(1)), "v_output_batch1");
-    // }
+    if (q_output) {
+        printBufferData(*q_output, "q_output");
+    }
 
     const size_t hidden_units    = head_num * size_per_head;
     const size_t hidden_units_kv = kv_head_num * size_per_head;
 
     auto lse_acc_buf = allocateBuffer({DataType::TYPE_FP32, {1, 1, 1, 1}, AllocationType::DEVICE}, {"lse_acc_buf"});
 
-    printBufferData(*q_output, "run_ck_q_output");
-    printBufferData(*k_output, "run_ck_k_output");
-    printBufferData(*v_output, "run_ck_v_output");
+    if (q_output) {
+        printBufferData(*q_output, "run_ck_q_output");
+    }
+    if (k_output) {
+        printBufferData(*k_output, "run_ck_k_output");
+    }
+    if (v_output) {
+        printBufferData(*v_output, "run_ck_v_output");
+    }
     printBufferData(params.input, "run_ck_input");
 
     if (skip_add_bias_transpose || prefix_prompt_param.max_prefix_prompt_length <= 0) {
