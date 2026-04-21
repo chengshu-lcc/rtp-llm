@@ -96,7 +96,23 @@ micro-bench `compare_fused_merge_recompute.py`（B=1, T=15000, Hv=16, Hg=2, K=V=
 | 新 2-kernel 路径 | 824.90 µs |
 | Δ | **−236.16 µs (−22.3%)** |
 
-数值正确性：max abs diff w=1.95e-3，u=1.95e-3（参考 max ≈ 0.27/0.38，BF16 噪声范围内 ✓）。
+数值正确性（micro-bench 老 vs 新 路径）：max abs diff w=1.95e-3，u=1.95e-3（参考 max ≈ 0.27/0.38，BF16 噪声范围内 ✓）。
+
+#### 端到端精度验证（vs 独立 fp32 递归参考实现）
+
+跑 `test_chunk_prefill.py::test_chunk_varlen`，参考实现是 `recurrent_gated_delta_rule_ref` —— fp32 串行 GDN，不依赖任何 fused/unfused kernel 路径，独立基准。
+
+| 用例 | H | D | T | seqs | g mask | 输出 ratio | 状态 |
+|---|---:|---:|---|---|---|---:|---|
+| 原 case A | 4 | 64 | 15 | 1 | — | 0.0019 | ✅ |
+| 原 case B | 4 | 64 | 256/244/500 | 3 | — | 0.0028 | ✅ |
+| Qwen3.5-9B 生产 shape | 16 | 128 | 15000 | 1 | — | 0.0029 | ✅ |
+| Qwen3.5-9B varlen | 16 | 128 | 5000/4000/6000 | 3 | — | 0.0029 | ✅ |
+| Qwen3.5-9B + g masked | 16 | 128 | 15000 | 1 | mask_p=0.5 | 0.0030 | ✅ |
+| 边界 T<64 | 4 | 64 | 33 | 1 | — | 0.0022 | ✅ |
+| 边界 T 非 64 倍数 | 4 | 64 | 100/150/83 | 3 | — | 0.0026 | ✅ |
+
+所有 ratio < 阈值 0.005。覆盖：生产 shape、varlen、g masking、boundary（T<BT、T 非 64 倍数）。
 
 实测 −2.25 ms 比 micro-bench 推算的 −5.7 ms（236 µs × 24）小 —— 单次 perf_test 噪声 ±5 ms 量级，
 后续若叠加 N6 拿到完整 9.1 ms 时再回看是否需要二次验证。
