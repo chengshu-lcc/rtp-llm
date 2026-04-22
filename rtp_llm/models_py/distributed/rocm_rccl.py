@@ -229,32 +229,59 @@ def set_hipgraph_capture_nccl_comm(
     # stable addresses recorded during capture.
     _hipgraph_allgather_outputs.clear()
 
-def _pre_init_trtllm_allreduce(
+# ---------------------------------------------------------------------------
+# Strategy flags — read once at import time.
+# Must be defined before _pre_init_allreduce_strategies for clarity.
+# ---------------------------------------------------------------------------
+def _parse_strategies() -> set:
+    raw = os.environ.get("ROCM_ALLREDUCE_STRATEGY", "none").lower()
+    return {s.strip() for s in raw.split(",") if s.strip()} or {"none"}
+
+_rocm_allreduce_strategies: set = (
+    _parse_strategies() if _is_rocm_runtime else {"none"}
+)
+_enable_quick_allreduce: bool = "quick" in _rocm_allreduce_strategies
+_enable_trtllm_allreduce: bool = "trtllm" in _rocm_allreduce_strategies
+
+def _pre_init_allreduce_strategies(
     tp_group: Optional[torch.distributed.ProcessGroup] = None,
 ) -> None:
-    """Pre-initialize trt_allreduce before graph capture.
+    """Pre-initialize allreduce backends before graph capture.
 
-    Must be called before entering graph capture mode so that
-    TrtllmDistEnv.__init__ (which does hipMalloc and dist.all_gather_object)
-    runs outside of stream capture where those operations are forbidden.
+    Must be called before entering graph capture mode so that operations
+    like hipMalloc, all_gather_object, and init_custom_qr run outside of
+    stream capture where they are forbidden.
+
+    Only pre-initializes strategies that are actually enabled via
+    ROCM_ALLREDUCE_STRATEGY.
     """
     if not _is_rocm_runtime:
         return
     if _rccl_world_size <= 1:
         return
-    try:
-        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
-            ensure_trtllm_comm_initialized,
-        )
-        if not torch.distributed.is_initialized():
-            return
-        if tp_group is None:
-            tp_group = torch.distributed.group.WORLD
-        device_id = torch.cuda.current_device()
-        ensure_trtllm_comm_initialized(group=tp_group, device_id=device_id)
-        logging.info("Pre-init trtllm_allreduce succeeded (device_id=%s)", device_id)
-    except Exception as exc:
-        logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
+    if not torch.distributed.is_initialized():
+        return
+    if tp_group is None:
+        tp_group = torch.distributed.group.WORLD
+    device_id = torch.cuda.current_device()
+
+    if _enable_trtllm_allreduce:
+        try:
+            from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+                ensure_trtllm_comm_initialized,
+            )
+            ensure_trtllm_comm_initialized(group=tp_group, device_id=device_id)
+            logging.info("Pre-init trtllm_allreduce succeeded (device_id=%s)", device_id)
+        except Exception as exc:
+            logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
+
+    if _enable_quick_allreduce:
+        try:
+            from rtp_llm.models_py.modules.base.rocm.quick_allreduce import quick_ar_manager
+            quick_ar_manager.ensure_initialized(group=tp_group, device_id=device_id)
+            logging.info("Pre-init quick_allreduce succeeded (device_id=%s)", device_id)
+        except Exception as exc:
+            logging.warning("Pre-init quick_allreduce failed (non-fatal): %s", exc)
 
 def bootstrap_hipgraph_capture_rccl_comm_from_tp_group(
     tp_group: torch.distributed.ProcessGroup,
@@ -335,9 +362,9 @@ def prepare_hipgraph_capture_rccl_comm_if_needed(
         return
     # IMPORTANT: bootstrap must happen before graph capture begins.
     bootstrap_hipgraph_capture_rccl_comm_from_tp_group(tp_group)
-    # Pre-initialize trt_allreduce with the correct TP group so that
-    # hipgraph_capture_all_reduce can use it during graph capture.
-    _pre_init_trtllm_allreduce(tp_group)
+    # Pre-initialize enabled allreduce strategies with the correct TP group
+    # so that hipgraph_capture_all_reduce can use them during graph capture.
+    _pre_init_allreduce_strategies(tp_group)
 
 
 def enter_hipgraph_capture_mode(
@@ -442,6 +469,7 @@ def _is_trtllm_allreduce_ready() -> bool:
             and _trtllm_comm_manager.initialized
             and _trtllm_comm_manager.dist_env is not None
             and not _trtllm_comm_manager.dist_env.disabled
+            and _trtllm_comm_manager.dist_env.handle is not None
         )
     except Exception:
         return False
@@ -450,28 +478,53 @@ def hipgraph_capture_all_reduce(
     tensor: torch.Tensor,
     process_group: Optional[torch.distributed.ProcessGroup] = None,
 ) -> torch.Tensor:
-    # Try trt_allreduce first if already initialized and hidden_size is supported;
-    # never attempt first-time initialization during graph capture (hipMalloc is forbidden).
-    if (
-        process_group is not None
-        and _is_hidden_size_supported_for_trtllm(tensor.shape[-1])
-        and _is_trtllm_allreduce_ready()
-    ):
+    """Tiered allreduce routing for HIPGraph capture (decode) mode.
+
+    Tries enabled strategies in priority order (quick → trtllm → NCCL).
+    Never attempts first-time initialization during graph capture
+    (hipMalloc / all_gather_object are forbidden during stream capture).
+
+    Returns:
+        A tensor with allreduced values. May or may not be the same object
+        as ``tensor`` depending on which backend is used.
+    """
+    # Tier 1: Quick AllReduce
+    if _enable_quick_allreduce:
         try:
-            from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
-                allreduce as trtllm_allreduce,
-            )
+            from rtp_llm.models_py.modules.base.rocm.quick_allreduce import quick_ar_manager
+
             device_id = torch.cuda.current_device()
-            return trtllm_allreduce(
-                allreduce_in=tensor,
-                group=process_group,
-                device_id=device_id,
-            )
+            if quick_ar_manager.should_use(tensor, process_group, device_id):
+                return quick_ar_manager.allreduce(tensor)
         except Exception as exc:
             logging.warning(
-                "trtllm_allreduce failed in graph capture mode, "
-                "fallback to ncclAllReduce: %s", exc,
+                "Quick AllReduce failed in capture mode, fallback: %s", exc
             )
+
+    # Tier 2: trtllm allreduce
+    if _enable_trtllm_allreduce:
+        if (
+            process_group is not None
+            and _is_hidden_size_supported_for_trtllm(tensor.shape[-1])
+            and _is_trtllm_allreduce_ready()
+        ):
+            try:
+                from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+                    allreduce as trtllm_allreduce,
+                )
+                device_id = torch.cuda.current_device()
+                return trtllm_allreduce(
+                    allreduce_in=tensor,
+                    group=process_group,
+                    device_id=device_id,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "trtllm_allreduce failed in capture mode, fallback: %s", exc,
+                )
+
+    # Note: aiter custom AR is not used in capture mode (P2P path is
+    # not graph-capture safe).
 
     # Fallback to lib.ncclAllReduce (in-place, returns original tensor)
     lib, rccl_comm = _get_rccl_runtime()
