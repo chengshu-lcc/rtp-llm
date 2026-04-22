@@ -1,0 +1,22 @@
+N15 P2 micro-bench results (2026-04-22, MI308X)
+================================================
+
+Shape: head_num=8, kv_head_num=2, size_per_head=256
+       q_size=2048, kv_size=512, hidden=3072, BF16
+
+| m     | baseline (us) | V2 (us)  | speedup | num diff (vs fp32-ref) |
+|------:|--------------:|---------:|--------:|-----------------------:|
+| 15000 |   291.9       |  157.9   |  1.85x  | 1.56e-2 (BF16 noise)   |
+|  4096 |    89.6       |   55.5   |  1.61x  | 1.56e-2                |
+|   256 |    17.4       |   12.8   |  1.36x  | 3.91e-3                |
+|     7 |    12.4       |   12.3   |  1.00x  | 0.00e+00               |
+
+Estimated end-to-end prefill saving:
+  (291.9 - 157.9) us * 8 layers = ~1072 us = ~1.07 ms / prefill
+
+Decode: NO REGRESSION at m=7 (this is what killed N13).
+Numerical: V2 matches fp32 reference within BF16 quantization noise. v slice untouched.
+
+Gates PASS:
+  - max abs diff (V2 vs fp32-ref) at m=15000 = 1.56e-2 < 5e-2 ✓
+  - V2 p50 at m=15000 = 157.9 us < 200 us gate ✓

@@ -295,12 +295,14 @@ cc_library(
     name = "rocm_fused_qk_rmsnorm",
     srcs = [
         "rocm/fused_qk_rmsnorm.cu",
+        "rocm/fused_qk_rmsnorm_v2.cu",
         "rocm/masked_silu_and_mul/mask_kernel.cu",
     ],
     hdrs = [
         "rocm/masked_silu_and_mul/mask_kernel.h",
         "rocm/masked_silu_and_mul/utils/array_utils.h",
         "rocm/fused_qk_rmsnorm.h",
+        "rocm/fused_qk_rmsnorm_v2.h",
     ],
     deps = rocm_deps + [
         "//rtp_llm/cpp/cuda:cuda_utils_cu",

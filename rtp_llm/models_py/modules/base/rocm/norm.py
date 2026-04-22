@@ -1,3 +1,4 @@
+import os
 from typing import Tuple, Union
 
 import torch
@@ -173,9 +174,28 @@ class FusedQKRMSNorm(nn.Module):
         self.q_size = self.head_num * self.size_per_head
         self.kv_size = self.kv_head_num * self.size_per_head
 
+    # N15: opt-in V2 kernel selection (warp-per-head wave64 single-pass).
+    # Defaults ON; set USE_FUSED_QK_RMSNORM_V2=0 to fall back to baseline.
+    _USE_V2 = os.environ.get("USE_FUSED_QK_RMSNORM_V2", "1") == "1"
+    _DIAG_PRINTED = False
+
     def forward(self, hidden_states):
         m, n = hidden_states.shape
-        rtp_llm_ops.fused_qk_rmsnorm(
+        if not FusedQKRMSNorm._DIAG_PRINTED:
+            FusedQKRMSNorm._DIAG_PRINTED = True
+            import sys
+            sys.stderr.write(
+                f"[N15 DIAG] FusedQKRMSNorm first call: USE_V2={self._USE_V2} "
+                f"m={m} n={n} head_num={self.head_num} kv_head_num={self.kv_head_num} "
+                f"size_per_head={self.size_per_head} dtype={hidden_states.dtype}\n"
+            )
+            sys.stderr.flush()
+        op = (
+            rtp_llm_ops.fused_qk_rmsnorm_v2
+            if self._USE_V2
+            else rtp_llm_ops.fused_qk_rmsnorm
+        )
+        op(
             hidden_states,
             self.q_weight,
             self.k_weight,
