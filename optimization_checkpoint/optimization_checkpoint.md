@@ -98,6 +98,7 @@ DP_SIZE=1 python benchmark.py
 | **N10** | GDN `_layer_norm_fwd_1pass_kernel` 重新 autotune | ⏳ TODO（autotune cache rebuild） | ~1.9 ms | — | [n10_layernorm_autotune/](./n10_layernorm_autotune/optimization_checkpoint.md) |
 | **N11** | GDN `chunk_fwd_kernel_o` 重新 autotune | ⏳ TODO（autotune cache rebuild） | ~4.8 ms | — | [n11_chunk_fwd_o_autotune/](./n11_chunk_fwd_o_autotune/optimization_checkpoint.md) |
 | **N12** | 消除 Python-side `tensor.contiguous() / .to()` 复制（attention path）| ✅ Done (Plan A+B+C, 2026-04-21) | ~2.5–3.5 ms | **−3 ms**（A 单独贡献，B+C 在波动内 ≈ 0） | C++ RoPE op 直出 packed K/V `[total_kv_tokens, Hkv, D]`（替代 padded `[B, Hkv, T+prefix, D]`），Python 侧砍掉 per-batch unpad+`.contiguous()`+`torch.cat`；同时让 `FMHAParams` 直接复用 `attn_inputs.cu_seqlens` 取消 HtoD；删除调试 print |
+| **N13** | Full-Attn `fusedQkRmsNorm` (C++) → `aiter.fused_qk_rmsnorm` / `aiter.rms_norm` ×2 | ❌ KILLED（Phase 1 否决，2026-04-22） | ~1.6 ms | **prefill 仅 −88 µs / decode 5–7× 回归** | [n13_qk_rmsnorm_aiter/](./n13_qk_rmsnorm_aiter/optimization_checkpoint.md) §8 |
 | **N14** | RTP 用 5 种 GEMM tile shape，SGL 只用 1 种 | ⏳ RESEARCH（架构性） | ~3–5 ms | — | 详见 addendum §B.3。`MT256x96x64`/`MT256x160x32`/`MT192x128x64`/`MT256x80x64`/`MT32x224x128` vs SGL 单一 `MT256x96x64`。需改 rocBLAS dispatch 或权重 layout |
 
 **估算合计**：N1–N12 ≈ **76 ms**（N9 修正 0.1→0.55 ms + 新增 N12 ~3 ms），仍约等于 RTP vs SGL 70 ms gap（含小幅重叠）。N14 留作 P3 研究项。
@@ -135,6 +136,7 @@ DP_SIZE=1 python benchmark.py
 | P2-6 | N10 重 autotune `_layer_norm_fwd_1pass_kernel` | 低 | ~1.9 ms | 同 Triton kernel |
 | P2-7 | N6 / N8 / N9 | 低/小 | 合计 ~1.6 ms（N9 修正 0.55 ms） | 顺手做 |
 | P3-8 | **N14** 收敛 GEMM tile shapes | 高（架构性） | ~3–5 ms | 5 shapes → 1，需改 rocBLAS dispatch |
+| ❌ KILLED | **N13** Full-Attn QK-Norm → aiter | — | — | Phase 1 micro-bench 否决：reshape 拷贝吃掉收益（prefill 仅 −88µs，decode 5-7× 回归）。要拿 SGL 0.94ms 须做上游 `qkv_proj` → 分离 q/k/v 的重构，并入 N7 一起做 |
 
 ---
 
@@ -166,8 +168,11 @@ optimization_checkpoint/
 │   └── optimization_checkpoint.md
 ├── n10_layernorm_autotune/               # ⏳ TODO
 │   └── optimization_checkpoint.md
-└── n11_chunk_fwd_o_autotune/             # ⏳ TODO
-    └── optimization_checkpoint.md
+├── n11_chunk_fwd_o_autotune/             # ⏳ TODO
+│   └── optimization_checkpoint.md
+└── n13_qk_rmsnorm_aiter/                 # ❌ KILLED（Phase 1 否决）
+    ├── optimization_checkpoint.md
+    └── micro_bench.py
 ```
 
 > `v2_baseline_4517b6418/`、`bench_*.txt`、`dead_qkv_writes{,_v2}.patch` 是迁移前的临时档案，内容已散到 n2/n7 等子目录，可在确认无遗漏后删除。

@@ -6,8 +6,11 @@
 > **目标**：在 ROCm prefill `contextAttention` 路径上消除 `add_fusedQKV_bias_transpose_prefill_kernel_v1`
 > 写到 `q_output / k_output / v_output` 的 dead bytes，以及前置 `bufMemset` 的 dead fills。
 >
-> **状态**：⚠️ **WIP** —— commit `6075b5b8b WIP: dead_qkv_writes v2 + DEBUG LOG` 已落库，但
-> timeline 显示 patch 未生效（FillFunctor 数量不变、v1 kernel duration 不变），原因待 DEBUG LOG 二次定位。
+> **状态**：❌ **PATCH 落在死代码** —— commit `6075b5b8b WIP: dead_qkv_writes v2 + DEBUG LOG`
+> 虽然 .so 已正确包含改动（`strings ... | grep DEAD_QKV_DEBUG = 1`），但 DEBUG LOG 在跑完一次
+> prefill 15k 后仍是 0 bytes。结论：`LOAD_PYTHON_MODEL=1` 完全绕开 C++ `ROCmAttentionOp::contextAttention`，
+> 走 `models_py/bindings/rocm/FusedRopeKVCacheOp.cc::FusedRopeKVCachePrefillOpBase::forward`。
+> patch 思路要重做，详见 §10。
 
 ---
 
@@ -201,12 +204,72 @@ head -10 /tmp/dead_qkv_debug.log
 ## 7. Phase 状态
 
 - [x] Phase 0：checkpoint + 环境
-- [x] Phase 1：根因定位
-- [x] Phase 2：方案设计
+- [x] Phase 1：根因定位（**Phase 6 推翻**）
+- [x] Phase 2：方案设计（**Phase 6 推翻**）
 - [x] Phase 3：apply + build（已 commit `6075b5b8b`）
 - [x] Phase 4：正确性（perf_test 通过，无 NaN）
 - [x] Phase 5：性能验证 — **❌ patch 未生效**
-- [ ] Phase 6：DEBUG LOG 验证 + 决策（**接着这里干**）
+- [x] Phase 6：DEBUG LOG 验证 + 决策 — **见 §10**
+- [ ] Phase 7：按 §10 重新选定路径
+
+## 10. Phase 6 结论：patch 落在 dead code（2026-04-21）
+
+### 10.1 验证步骤
+
+1. 确认 .so 已含 patch：`strings librtp_compute_ops.so | grep DEAD_QKV_DEBUG = 1` ✅
+2. 跑 perf_test `--partial=2`（prefill 15k，TP=2，`USE_ASM_PA=0`，`LOAD_PYTHON_MODEL=1`）→ Prefill Time 917 ms（与 §3 baseline 同噪声范围）
+3. 检查 `/tmp/dead_qkv_debug.log` → **0 bytes**
+
+`static FILE* fopen` 在每次进入 `contextAttention` 都会无条件 fprintf+fflush，0 bytes 唯一解释是 **`ROCmAttentionOp::contextAttention` 在整次 prefill 都没被调用**。
+
+### 10.2 真正的 prefill 路径
+
+`LOAD_PYTHON_MODEL=1` 完全绕开 C++ `GptModel::forward`，因此 `device_->attentionLayer()` /
+`device_->contextAttention()` 都不在调用栈上。Python 路径如下：
+
+```
+Qwen35Dense / qwen3_next.py
+  → Python attention module
+    → AiterPrefillImplNonAsm.forward (factory/attention/rocm_impl/aiter.py:911)
+      ├─ FusedRopeKVCachePrefillOpNonAsm.forward       ← C++ binding @ models_py/bindings/rocm/FusedRopeKVCacheOp.cc
+      │     → invokeAddFusedQKVBiasTransposePrefillV1   (USE_ASM_PA=0 → use_asm()=false → V1 路径)
+      │       store_qkv=false (FP8 path: !use_paged_fmha)
+      │       store_q=true       ← q_output 被下游 flash_attn_varlen_func 读
+      │       store_kv=true      ← k/v_output 被下游 Python 解 padded → 给 flash_attn_varlen_func
+      │       store_cache=true   ← KV cache 必须写
+      └─ AiterPrefillAttnOp.forward (aiter.py:258-322)
+          → Python 解 padded K/V (line 298-309): 7.7 MB × 2 transpose+contiguous
+          → aiter.flash_attn_varlen_func(q, key_packed, value_packed, ...)
+```
+
+### 10.3 §1.3 假设 vs 实际
+
+| §1.3 假设 | 实际 |
+|---|---|
+| `runCKFmha` 直接读 `params.input`，不读 `q/k/v_output` | **不适用** — Python 走的是 `flash_attn_varlen_func` 路径，确实读 `q/k/v_output` |
+| `store_q=true, store_kv=true` 是 dead writes | **错** — q_output 是 `flash_attn_varlen_func` 的 query 输入；k/v_output 被 Python 解 padded 后做 K/V 输入 |
+| `bufMemset(q/k/v_output)` 的 ~98 µs 也可省 | 仅当 §10.4 (b)/(c) 改造成立才能省 |
+
+§1.3 的"dead bytes"诊断成立**只对 C++-only 路径**（`LOAD_PYTHON_MODEL=0`）。Python 路径下，
+N7 v3 patch（即 commit `6075b5b8b`）打在 `ROCmAttentionOp::contextAttention` 是死代码，timeline
+不动是合理的，没有任何东西被节省。
+
+### 10.4 三条候选新方向（按 ROI 排序）
+
+| 路径 | 改动范围 | 预期收益/layer | 风险 |
+|---|---|---:|---|
+| **(a) Patch 真正的 hot path** —— `FusedRopeKVCacheOp.cc::FusedRopeKVCachePrefillOpBase::forward` 同款 store_q/store_kv 重排 | C++ 中改 | **0** —— store_q/store_kv 在 Python 路径是真用，**没有 dead write 可省** | — |
+| **(b) 让 C++ 直接输出 packed K/V `[token_kv_num, Hkv, D]`，省掉 Python 解 padded** | C++ kernel 输出 layout 重排 + Python 去掉 line 298-309 解 padded | ~30-100 µs（K/V transpose+contiguous 的 copy） | 中 — 需要改 kernel layout 假设 |
+| **(c) 把 paged batch prefill 路径打开给 nocache 场景** —— `AiterPrefillImplPaged` 当前 `support()` 要求 `has_prefix=True`，改成 nocache 也能进；paged kernel 直接从 kv_cache 读 K/V，**根本不需要 q/k/v_output 三个 buffer** | Python factory 选择 + C++ binding 加分支跳过 alloc | **~480 µs**（消掉 alloc + zero-fill + RoPE 写入 + Python 解 padded 全套） | 高 — 需要确认 batch_prefill_impl 在 nocache + 长 query 场景下数值正确、性能不退；要叠加 mha_batch_prefill 的 reshape_paged_kv_cache 开销 |
+| **(d) 拆 v1 fat kernel** 成 SGLang 风格 `add_rmsnorm_quant ×2` + 独立 mrope + 独立 scatter，对照 §1.2 表 | 大 | ~160 µs（331→120 RmsNorm + scatter 拆分增益）| 中 — drop-in port，但要重 autotune |
+
+### 10.5 推荐
+
+放弃 patch ROCmAttentionOp（死代码）。下一步：
+
+1. **revert `6075b5b8b`**（保留 LOG 实验数据在本 checkpoint，删 .cc 改动）
+2. 在 N7 单独立项之前，先做 N4（aiter twoshot allreduce, ~10.7 ms, env flip）和 N11（chunk_fwd_o autotune, ~4.8 ms）— ROI 都比 N7 重做高
+3. N7 重做按方向 (c) 或 (d) 二选一；(c) 收益大但风险高，建议先做 micro-bench 验证 paged prefill 在 nocache 长 query 上的数值与速度
 
 ## 8. 文件清单
 
