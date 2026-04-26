@@ -5,7 +5,10 @@ import torch
 import torch.nn.functional as F
 from aiter import layernorm2d_fwd as layernorm2d_fwd
 from aiter import rms_norm
-from aiter import rmsnorm2d_fwd_with_add_ck as fused_add_rmsnorm
+try:
+    from aiter import rmsnorm2d_fwd_with_add_ck as fused_add_rmsnorm
+except ImportError:  # aiter pin without explicit _ck export
+    from aiter import rmsnorm2d_fwd_with_add as fused_add_rmsnorm
 from torch import nn
 
 from rtp_llm.models_py.modules.base.common.norm import (
