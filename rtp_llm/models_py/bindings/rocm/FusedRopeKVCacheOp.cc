@@ -53,7 +53,21 @@ CKAttnPtr FusedRopeKVCachePrefillOpBase::prepare(torch_ext::PyAttentionInputs at
         kv_cache_kernel_block_id_device = torchTensor2Buffer(attn_inputs.kv_cache_kernel_block_id_device);
     }
 
-    bool has_prefix = attn_inputs.prefix_lengths.defined() && attn_inputs.prefix_lengths.numel() > 0;
+    bool has_prefix_buffer = attn_inputs.prefix_lengths.defined() && attn_inputs.prefix_lengths.numel() > 0;
+
+    // N16-bubble1 fix: compute max(prefix_lengths) ONCE here. If prefix_lengths is
+    // already on CPU (the common case from PyWrappedModel.cc), this is essentially
+    // free. If it's on CUDA, we eat one D2H sync now but save 8 per-layer syncs in
+    // forward(). Cache the integer in CKAttn so forward() never needs to recompute.
+    int max_prefix_length = 0;
+    if (has_prefix_buffer) {
+        max_prefix_length = attn_inputs.prefix_lengths.max().item<int>();
+    }
+    // Real prefix iff there's at least one batch with prefix_length > 0. Old code
+    // treated has_prefix == has_buffer (true even when all values were 0), which
+    // forced an unnecessary HtoD upload of prefix_lengths and then a per-layer
+    // D2H .max().item<int>() sync in forward() (~110ms host stall × 8 layers).
+    bool has_real_prefix = max_prefix_length > 0;
 
     bool use_fmha_fp8 = false;
     use_fmha_fp8      = attn_configs_.kv_cache_dtype == KvCacheDataType::FP8;
@@ -65,13 +79,14 @@ CKAttnPtr FusedRopeKVCachePrefillOpBase::prepare(torch_ext::PyAttentionInputs at
     } else {
         attn_params = std::make_shared<CKAttn>();
     }
-    attn_params->attn_type      = torchDTypeToDataType(attn_inputs.dtype);
-    attn_params->cu_seqlens     = attn_inputs.cu_seqlens;
-    attn_params->cu_kv_seqlens  = attn_inputs.cu_kv_seqlens;
-    attn_params->max_seq_len    = attn_inputs.input_lengths.max().item<int32_t>();
-    attn_params->padding_offset = attn_inputs.padding_offset;
-    // 处理 prefix_lengths：确保在 CUDA 上且连续
-    if (has_prefix) {
+    attn_params->attn_type         = torchDTypeToDataType(attn_inputs.dtype);
+    attn_params->cu_seqlens        = attn_inputs.cu_seqlens;
+    attn_params->cu_kv_seqlens     = attn_inputs.cu_kv_seqlens;
+    attn_params->max_seq_len       = attn_inputs.input_lengths.max().item<int32_t>();
+    attn_params->padding_offset    = attn_inputs.padding_offset;
+    attn_params->max_prefix_length = max_prefix_length;
+    // Only upload prefix_lengths to CUDA if there's a real (non-zero) prefix.
+    if (has_real_prefix) {
         torch::Tensor prefix_lengths = attn_inputs.prefix_lengths;
         if (!prefix_lengths.is_cuda()) {
             prefix_lengths = prefix_lengths.to(torch::kCUDA, /*non_blocking=*/false, /*copy=*/true);
@@ -94,9 +109,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> FusedRopeKVCachePrefillO
     const int seq_len           = params->max_seq_len;
 
     // 计算包含 prefix 的序列长度
-    int max_prefix_length = 0;
-    if (params->prefix_lengths.size(0)) {
-        max_prefix_length = params->prefix_lengths.max().item<int>();
+    // N16-bubble1 fix: use the integer cached in prepare(); avoids per-layer
+    // .max().item<int>() D2H sync that previously stalled the host ~110ms per
+    // call on Full-Attn layers (cf. trace bubble between RoPE+QKV and FMHA).
+    // Fallback to legacy path if cache wasn't populated (max_prefix_length == -1).
+    int max_prefix_length = params->max_prefix_length;
+    if (max_prefix_length < 0) {
+        max_prefix_length = params->prefix_lengths.size(0) ? params->prefix_lengths.max().item<int>() : 0;
     }
     const int seq_len_with_prefix = seq_len + max_prefix_length;
 

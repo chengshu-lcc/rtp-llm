@@ -74,8 +74,12 @@ forward_param PagedAttnDecodeOp::forward(const torch::Tensor&                   
         prefix_prompt_param.kv_block_array = kv_block_array;
 
         if (params->prefix_lengths.defined() && params->prefix_lengths.numel() > 0) {
-            prefix_prompt_param.d_prefix_prompt_lengths  = params->prefix_lengths.data_ptr<int>();
-            prefix_prompt_param.max_prefix_prompt_length = params->prefix_lengths.max().item<int>();
+            prefix_prompt_param.d_prefix_prompt_lengths = params->prefix_lengths.data_ptr<int>();
+            // N16-bubble1 fix: use cached scalar instead of per-call .max().item()
+            // D2H sync. Falls back to legacy path if cache wasn't populated.
+            int cached = params->max_prefix_length;
+            prefix_prompt_param.max_prefix_prompt_length =
+                cached >= 0 ? cached : params->prefix_lengths.max().item<int>();
             prefix_prompt_param.count_length             = 1;
         }
 

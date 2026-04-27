@@ -153,6 +153,10 @@ struct CKAttn {
     torch::Tensor sequence_lengths;
     torch::Tensor padding_offset;
     int           max_seq_len;
+    // N16-bubble1 fix: cached max(prefix_lengths) computed once in prepare() while
+    // prefix_lengths is still on CPU. Avoids per-layer .max().item<int>() D2H sync
+    // (~110ms host stall per Full-Attn layer) in forward(). Default -1 = uncached.
+    int           max_prefix_length = -1;
     bool          decode_plan;
 
     DataType attn_type;
