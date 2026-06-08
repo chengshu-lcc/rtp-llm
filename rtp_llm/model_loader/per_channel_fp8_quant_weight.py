@@ -843,7 +843,7 @@ class LoadQuantPerChannelFp8Weight(PerChannelFp8Weight):
                 )
                 if (
                     has_prequant
-                    and "float8" in str(t.dtype)
+                    and t.dtype == torch.float8_e4m3fn
                     and tensor_source.has_prequantized_scale(name)
                 ):
                     fp8_out[local_idx].copy_(t)

@@ -143,22 +143,23 @@ class GenericMoeLayer(nn.Module):
 
     def _extend_topk_with_shared_expert(self, topk_ids, topk_weights, hidden_states):
         num_tokens = topk_ids.shape[0]
-        shared_ids = torch.full(
-            (num_tokens, 1),
-            self.fused_shared_expert_id,
-            dtype=topk_ids.dtype,
-            device=topk_ids.device,
+        k = topk_ids.shape[1]
+        ext_ids = torch.empty(
+            (num_tokens, k + 1), dtype=topk_ids.dtype, device=topk_ids.device
         )
+        ext_weights = torch.empty(
+            (num_tokens, k + 1), dtype=topk_weights.dtype, device=topk_weights.device
+        )
+        ext_ids[:, :k] = topk_ids
+        ext_ids[:, k] = self.fused_shared_expert_id
+        ext_weights[:, :k] = topk_weights
         if self.shared_expert_gate is not None:
-            gate_out = self.shared_expert_gate(hidden_states)
-            shared_weights = torch.sigmoid(gate_out).float()
+            ext_weights[:, k:] = torch.sigmoid(
+                self.shared_expert_gate(hidden_states)
+            ).float()
         else:
-            shared_weights = torch.ones(
-                (num_tokens, 1), dtype=torch.float32, device=topk_ids.device
-            )
-        topk_ids = torch.cat([topk_ids, shared_ids], dim=1).contiguous()
-        topk_weights = torch.cat([topk_weights, shared_weights], dim=1).contiguous()
-        return topk_ids, topk_weights
+            ext_weights[:, k] = 1.0
+        return ext_ids, ext_weights
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, _ = hidden_states.shape

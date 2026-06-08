@@ -420,30 +420,62 @@ class MoeAtomicWeight(AtomicWeight):
                 return result
 
         # Fallback: original serial path
+        # Override experts bypass TensorCollector (their names are not
+        # registered in get_tensor_names), so load from database directly.
+        override_source = None
         before_merge_tensors = []
         for ckpt_idx, ckpt_weight in enumerate(ckpt_weights):
             for expert_id in selected_experts:
-                if (
-                    expert_id in self.expert_key_overrides
-                    and len(self.expert_key_overrides[expert_id]) > 1
-                    and self.stacked_ckpt_keys
-                ):
-                    parts = []
-                    for ow in self.expert_key_overrides[expert_id]:
-                        n = ow.name.format(
+                if expert_id in self.expert_key_overrides:
+                    if override_source is None:
+                        from rtp_llm.model_loader.tensor_source import (
+                            DatabaseTensorSource,
+                        )
+
+                        override_source = DatabaseTensorSource(
+                            tensor_source.get_database()
+                        )
+                    overrides = self.expert_key_overrides[expert_id]
+                    if len(overrides) > 1 and self.stacked_ckpt_keys:
+                        parts = []
+                        for ow in overrides:
+                            n = ow.name.format(
+                                i=str(layer_id),
+                                i_1=str(layer_id + 1),
+                                expert_id=str(expert_id),
+                            )
+                            parts.append(
+                                ow.merge_fun(
+                                    [
+                                        x.to(device)
+                                        for x in override_source.load_tensor(
+                                            n, convert_type
+                                        )
+                                    ]
+                                )
+                            )
+                        before_merge_tensors.append(torch.cat(parts, dim=0))
+                    else:
+                        effective = (
+                            overrides[ckpt_idx]
+                            if ckpt_idx < len(overrides)
+                            else overrides[0]
+                        )
+                        n = effective.name.format(
                             i=str(layer_id),
                             i_1=str(layer_id + 1),
                             expert_id=str(expert_id),
                         )
-                        parts.append(
-                            ow.merge_fun(
+                        before_merge_tensors.append(
+                            effective.merge_fun(
                                 [
                                     x.to(device)
-                                    for x in tensor_source.load_tensor(n, convert_type)
+                                    for x in override_source.load_tensor(
+                                        n, convert_type
+                                    )
                                 ]
                             )
                         )
-                    before_merge_tensors.append(torch.cat(parts, dim=0))
                 else:
                     effective = self._resolve_ckpt_weight(
                         ckpt_weight, ckpt_idx, expert_id
@@ -513,7 +545,9 @@ class MoeAtomicWeight(AtomicWeight):
                 combined = torch.cat(parts, dim=0)
                 return overrides[0].name.format(i=str(layer_id)), combined
             else:
-                effective = overrides[0]
+                effective = (
+                    overrides[ckpt_idx] if ckpt_idx < len(overrides) else overrides[0]
+                )
                 n = effective.name.format(
                     i=str(layer_id),
                     i_1=str(layer_id + 1),
